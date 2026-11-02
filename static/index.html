@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<title>Deck AR Preview</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="back" id="back" aria-label="Back" hidden>
+    <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <div class="title">Deck AR Preview</div>
+  <ol class="progress" id="progress" aria-label="Progress">
+    <li></li><li></li><li></li><li></li>
+  </ol>
+</header>
+
+<main>
+  <div class="notice" id="no-ar" hidden>
+    <div>
+      <strong>Open on your phone to view in AR.</strong>
+      <p>Scan this code with your phone camera:</p>
+      <p class="share-url" id="share-url"></p>
+    </div>
+    <img id="share-qr" alt="QR code for this page" width="132" height="132">
+  </div>
+
+  <!-- Step 1: shape -->
+  <section class="step" data-step="1">
+    <h1>Choose a deck style</h1>
+    <div class="cards grid2" id="shapes"></div>
+  </section>
+
+  <!-- Step 2: design -->
+  <section class="step" data-step="2" hidden>
+    <h1>Design your deck</h1>
+    <div class="plan-wrap" id="design-plan"></div>
+    <div class="fields" id="fields"></div>
+    <div class="field-group">
+      <div class="field-label">Height above ground</div>
+      <div class="segmented" id="heights"></div>
+    </div>
+    <button class="primary" id="to-stairs">Continue</button>
+  </section>
+
+  <!-- Step 3: stairs -->
+  <section class="step" data-step="3" hidden>
+    <h1>Place the stairs</h1>
+    <div class="plan-wrap" id="stairs-plan"></div>
+    <div class="edge-choices" id="edge-choices"></div>
+    <button class="primary" id="to-review">Continue</button>
+    <p class="error" id="gen-error" hidden></p>
+  </section>
+
+  <!-- Step 4: review (the model is generated on the way here) -->
+  <section class="step" data-step="4" hidden>
+    <h1>Review</h1>
+    <a rel="ar" id="ar-link" class="ar-card">
+      <img id="ar-thumb" alt="Deck plan">
+      <span class="ar-cta">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 2l9 5v10l-9 5-9-5V7z M3 7l9 5 9-5 M12 12v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+        AR Preview
+      </span>
+    </a>
+    <p class="ar-note" id="ar-https" hidden>AR on Android needs this page opened over HTTPS.</p>
+    <p class="ar-note" id="ar-diag" hidden></p>
+    <button class="secondary" id="show-in-photo">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 7h3l2-2.5h6L17 7h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+      Show in Photo
+    </button>
+    <!-- No capture attribute: iOS then offers Take Photo as well as the photo library -->
+    <input type="file" id="photo-input" accept="image/*" hidden>
+  </section>
+
+  <!-- Step 5: the deck in the homeowner's photo -->
+  <section class="step" data-step="5" hidden>
+    <!-- Original and result are stacked; comparing only toggles the result layer.
+         While placing, an SVG overlay shows the candidate walls and the deck bar. -->
+    <div class="photo-stage">
+      <img id="photo-original" alt="Your photo">
+      <img id="photo-result" alt="Your photo with the deck" hidden>
+      <svg class="placement" id="placement" hidden role="img" aria-label="Where the deck goes"></svg>
+      <div class="photo-busy" id="photo-busy" hidden><span class="spinner"></span><span id="photo-busy-text"></span></div>
+      <span class="photo-tag" id="photo-tag" hidden>Original</span>
+    </div>
+    <p class="error" id="photo-error" hidden></p>
+
+    <div id="placing-ui" hidden>
+      <p class="placing-hint">Tap a highlighted wall to place the deck, then drag to adjust.</p>
+      <button class="primary" id="add-deck">Add Deck</button>
+      <button class="secondary" id="placing-new">New Photo</button>
+    </div>
+
+    <div id="results-ui">
+      <p class="photo-note" id="photo-check" hidden></p>
+      <div class="chips" id="photo-styles"></div>
+      <div class="thumbs" id="photo-thumbs" hidden></div>
+      <div class="photo-actions">
+        <button class="secondary small" id="photo-compare" disabled>Original</button>
+        <button class="secondary small" id="photo-retry" disabled>Try Again</button>
+        <button class="secondary small" id="photo-move" disabled>Move Deck</button>
+        <button class="secondary small" id="photo-new">New Photo</button>
+      </div>
+      <button class="primary" id="photo-save" disabled>Save</button>
+    </div>
+
+    <!-- Prompt tuning: edits apply to the next Try Again (design) or material switch (restyle) -->
+    <details class="prompts">
+      <summary>Prompts</summary>
+      <label for="prompt-design">Design prompt</label>
+      <p class="hint">[PHOTO], [PLACEMENT GUIDE], [MATCHED VIEW], [TOP VIEW] and [FRONT VIEW] place the images. {deck}, {wall}, {placement}, {viewpoint} and {style} are filled in. Used by Add Deck and Try Again.</p>
+      <div class="prompt-images" id="design-inputs"></div>
+      <p class="analysis" id="photo-analysis"></p>
+      <textarea id="prompt-design" rows="14" spellcheck="false"></textarea>
+      <p class="hint">{deck} for this deck:</p>
+      <pre id="prompt-deck"></pre>
+      <label for="prompt-restyle">Restyle prompt</label>
+      <p class="hint">Used when switching to a material that has no result yet.</p>
+      <div class="prompt-images" id="restyle-inputs"></div>
+      <textarea id="prompt-restyle" rows="5" spellcheck="false"></textarea>
+      <button class="secondary small" id="prompt-reset">Reset to Default</button>
+    </details>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

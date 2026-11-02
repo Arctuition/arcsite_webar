@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+usd-core
+segno
+numpy
+pillow
