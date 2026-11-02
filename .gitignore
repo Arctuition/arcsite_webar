@@ -4,3 +4,7 @@ __pycache__/
 .env
 .idea/
 .DS_Store
+.dart_tool/
+build/
+.flutter-plugins-dependencies
+flutter/arcsite_ar_player/pubspec.lock

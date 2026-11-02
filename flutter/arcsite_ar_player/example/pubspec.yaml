@@ -1,0 +1,20 @@
+name: arcsite_ar_player_example
+description: Tries arcsite_ar_player on a phone.
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  arcsite_ar_player:
+    path: ..
+
+dev_dependencies:
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/deck.usdz

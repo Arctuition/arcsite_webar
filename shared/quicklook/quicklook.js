@@ -1,0 +1,123 @@
+// AR Quick Look on iPhone and iPad: support detection and launching a USDZ model.
+// The one copy shared by the webar page (loaded as a plain script) and the Flutter SDK in
+// flutter/arcsite_ar_player (embedded by its tool/embed_js.dart). Change it here, then rerun the tool.
+// Installs window.ArcsiteQuickLook; under Node it exports create() for the tests instead.
+(function (root) {
+  "use strict";
+
+  var VERSION = "0.1.0";
+  // Third-party iOS browsers that hand rel="ar" links to Quick Look although they run in a WKWebView,
+  // where relList.supports("ar") can't be trusted (same list as Google's <model-viewer>)
+  var QUICK_LOOK_BROWSERS = /CriOS\/|EdgiOS\/|FxiOS\/|DuckDuckGo\//;
+  // The Google app opens rel="ar" links in its own viewer, not Quick Look (<model-viewer> skips it too)
+  var GOOGLE_APP = /GSA\//;
+  var USDZ_TYPE = "model/vnd.usdz+zip";
+
+  function create(win) {
+    var doc = win.document;
+    var anchor = null; // reused, so Quick Look banner events have one place to land later
+    var dataUrl = null; // blob: URL of the last openData() model, kept until the next one
+
+    function isIOS() {
+      var nav = win.navigator;
+      if (/iPad|iPhone|iPod/.test(nav.userAgent)) return true;
+      // iPadOS Safari reports itself as a Mac by default; only the touch screen gives it away
+      return nav.platform === "MacIntel" && nav.maxTouchPoints > 1;
+    }
+
+    // Why Quick Look can't open here, or null when it can
+    function unsupportedReason() {
+      if (!isIOS()) return "not-ios";
+      var ua = win.navigator.userAgent;
+      if (GOOGLE_APP.test(ua)) return "quick-look-unavailable";
+      if (QUICK_LOOK_BROWSERS.test(ua)) return null;
+      // Safari supports rel="ar"; in-app browsers (WeChat, Facebook, ...) don't
+      var a = doc.createElement("a");
+      return a.relList && a.relList.supports && a.relList.supports("ar") ? null : "quick-look-unavailable";
+    }
+
+    function isSupported() {
+      return unsupportedReason() === null;
+    }
+
+    // The URL with Quick Look's options in its fragment: allowsContentScaling=0 keeps the model at
+    // true size (no pinch to zoom). The query and other fragment options are left as they are.
+    function buildUrl(url) {
+      var u = new URL(url, doc.baseURI);
+      var options = u.hash.replace(/^#/, "").split("&").filter(function (p) {
+        return p && p.split("=")[0] !== "allowsContentScaling";
+      });
+      options.push("allowsContentScaling=0");
+      u.hash = options.join("&");
+      return u.href;
+    }
+
+    // Why url can't be opened, or null. An empty URL would resolve to the page itself.
+    function urlError(url) {
+      if (typeof url !== "string" || !url.trim()) return "empty";
+      try {
+        buildUrl(url);
+        return null;
+      } catch (e) {
+        return "not a valid URL";
+      }
+    }
+
+    function open(url) {
+      var reason = unsupportedReason();
+      if (reason) throw new Error("AR Quick Look is not supported here (" + reason + ")");
+      var err = urlError(url);
+      if (err) throw new TypeError("Invalid model URL: " + err);
+      if (!anchor) {
+        anchor = doc.createElement("a");
+        anchor.setAttribute("rel", "ar");
+        anchor.style.display = "none";
+        doc.body.appendChild(anchor);
+      }
+      var href = buildUrl(url);
+      anchor.setAttribute("href", href);
+      // Quick Look only recognizes a blob: or data: model as USDZ by the download name
+      if (/^(blob|data):/i.test(href)) anchor.setAttribute("download", "model.usdz");
+      else anchor.removeAttribute("download");
+      // Safari opens Quick Look only for rel="ar" links that contain an image
+      var img = doc.createElement("img");
+      anchor.appendChild(img);
+      anchor.click();
+      anchor.removeChild(img);
+    }
+
+    // Why bytes can't be a USDZ file, or null. USDZ is a zip archive: it starts with a local file header.
+    function usdzError(bytes) {
+      if (!bytes || typeof bytes.length !== "number") return "expected a Uint8Array";
+      if (bytes.length < 4) return "empty or truncated (" + bytes.length + " bytes)";
+      if (bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) return "not a USDZ (zip) file";
+      return null;
+    }
+
+    function openData(bytes) {
+      var reason = unsupportedReason();
+      if (reason) throw new Error("AR Quick Look is not supported here (" + reason + ")");
+      var err = usdzError(bytes);
+      if (err) throw new TypeError("Invalid USDZ: " + err);
+      // The previous model is released only now: Quick Look may still be reading it after open() returns
+      if (dataUrl) win.URL.revokeObjectURL(dataUrl);
+      dataUrl = win.URL.createObjectURL(new win.Blob([bytes], { type: USDZ_TYPE }));
+      open(dataUrl);
+    }
+
+    return {
+      version: VERSION,
+      isSupported: isSupported,
+      unsupportedReason: unsupportedReason,
+      buildUrl: buildUrl,
+      urlError: urlError,
+      usdzError: usdzError,
+      open: open,
+      openData: openData,
+    };
+  }
+
+  if (typeof module === "object" && module.exports) module.exports = { create: create };
+  // Replace anything else under this name: another version, or an element with that id (named access)
+  else if (!root.ArcsiteQuickLook || root.ArcsiteQuickLook.version !== VERSION) root.ArcsiteQuickLook = create(root);
+})(typeof globalThis !== "undefined" ? globalThis : this);

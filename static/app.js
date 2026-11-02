@@ -94,10 +94,8 @@ const state = { step: 1, shape: null, dims: {}, height: 3, stairEdge: null, mode
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-const arSupported = (() => {
-  const a = document.createElement("a");
-  return !!(a.relList && a.relList.supports && a.relList.supports("ar"));
-})();
+// AR Quick Look (iPhone, iPad) comes from shared/quicklook/quicklook.js, which the Flutter SDK shares
+const arSupported = ArcsiteQuickLook.isSupported();
 // Android has no Quick Look; its counterpart is Google's Scene Viewer, opened with an intent link
 const isAndroid = /Android/i.test(navigator.userAgent);
 
@@ -494,14 +492,14 @@ $("#to-review").addEventListener("click", async () => {
 
 function renderReview() {
   loadPrompts();
-  $("#ar-link").href = isAndroid ? sceneViewerUrl(state.model.glb_url) : `${state.model.url}#allowsContentScaling=0`;
+  $("#ar-link").href = isAndroid ? sceneViewerUrl(state.model.glb_url) : ArcsiteQuickLook.buildUrl(state.model.url);
   // Scene Viewer only loads models over HTTPS
   $("#ar-https").hidden = !(isAndroid && location.protocol !== "https:");
   $("#ar-thumb").src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(planSvg({ stairs: true, standalone: true }));
 }
 
-// Quick Look reads options from the URL fragment; allowsContentScaling=0 locks the model at true scale.
-// Scene Viewer takes them as query parameters: resizable=false does the same.
+// Quick Look's options (allowsContentScaling=0: true scale) are set by ArcsiteQuickLook.buildUrl.
+// Scene Viewer takes its options as query parameters: resizable=false locks the model at true scale.
 // The intent goes to the Google app, which Android phones sold in the US come with (and which
 // <model-viewer> uses too). ar_preferred opens straight into AR; where Google Play Services for AR is
 // missing, Scene Viewer offers to install it or shows the model in 3D instead. (Sending the intent to

@@ -1,0 +1,15 @@
+name: arcsite_ar_player
+description: Shows USDZ models in AR Quick Look from Flutter Web on iPhone and iPad.
+version: 0.1.0
+publish_to: none
+repository: https://github.com/Arctuition/webar/tree/main/flutter/arcsite_ar_player
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  web: ^1.1.0
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0

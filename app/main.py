@@ -33,6 +33,7 @@ from .usdz import write_usdz
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
+SHARED_DIR = ROOT / "shared"  # code shared with other clients (the Flutter SDK)
 GENERATED_DIR = ROOT / "generated"
 GEOMETRY_VERSION = 6  # bump to invalidate cached models after geometry changes
 
@@ -52,7 +53,7 @@ app = FastAPI(title="Deck Web AR PoC")
 async def revalidate_ui(request: Request, call_next):
     """Make browsers revalidate the page and its assets so UI changes show up on phones right away."""
     response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
+    if request.url.path == "/" or request.url.path.startswith(("/static/", "/shared/")):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -306,10 +307,11 @@ def qr(url: str):
 def index():
     # Version asset URLs by modification time so phones never run a stale script
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    for name in ("app.js", "style.css"):
-        version = int((STATIC_DIR / name).stat().st_mtime)
-        html = html.replace(f"/static/{name}", f"/static/{name}?v={version}")
+    for url, path in (("/static/app.js", STATIC_DIR / "app.js"), ("/static/style.css", STATIC_DIR / "style.css"),
+                      ("/shared/quicklook/quicklook.js", SHARED_DIR / "quicklook" / "quicklook.js")):
+        html = html.replace(url, f"{url}?v={int(path.stat().st_mtime)}")
     return Response(html, media_type="text/html")
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/shared", StaticFiles(directory=SHARED_DIR), name="shared")
