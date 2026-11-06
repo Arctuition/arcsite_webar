@@ -1,0 +1,24 @@
+{
+  "name": "@arctuition/ar-player",
+  "version": "0.1.0",
+  "description": "Open USDZ models in AR Quick Look on iPhone and iPad, at true size.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "types": "./index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "quicklook.g.js"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node tool/embed.js",
+    "test": "node --test",
+    "prepack": "node tool/embed.js --check"
+  }
+}

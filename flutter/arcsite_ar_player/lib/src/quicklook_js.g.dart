@@ -4,8 +4,9 @@ const quickLookVersion = '0.1.0';
 
 const quickLookJs = r'''
 // AR Quick Look on iPhone and iPad: support detection and launching a USDZ model.
-// The one copy shared by the webar page (loaded as a plain script) and the Flutter SDK in
-// flutter/arcsite_ar_player (embedded by its tool/embed_js.dart). Change it here, then rerun the tool.
+// The one copy shared by the webar page (loaded as a plain script), the Flutter SDK in
+// flutter/arcsite_ar_player (embedded by its tool/embed_js.dart) and the npm package in
+// web/arcsite_ar_player (copied by its tool/embed.js). Change it here, then rerun both tools.
 // Installs window.ArcsiteQuickLook; under Node it exports create() for the tests instead.
 (function (root) {
   "use strict";

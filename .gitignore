@@ -9,3 +9,5 @@ build/
 .flutter-plugins-dependencies
 flutter/arcsite_ar_player/pubspec.lock
 .claude/
+node_modules/
+*.tgz

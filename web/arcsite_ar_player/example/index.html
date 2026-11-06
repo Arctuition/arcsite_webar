@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AR Player Example</title>
+<style>
+  body { font: 16px -apple-system, system-ui, sans-serif; margin: 0 auto; max-width: 480px; padding: 16px; }
+  input, button { box-sizing: border-box; font: inherit; padding: 12px; width: 100%; }
+  button { margin: 8px 0 24px; }
+  #error { color: #c00; }
+</style>
+</head>
+<body>
+<!-- Serve the package directory over HTTP and open /example/ -->
+<h1>AR Player Example</h1>
+<p id="support"></p>
+<input id="url" value="deck.usdz" aria-label="USDZ URL">
+<button id="from-url">AR Preview from URL</button>
+<button id="from-bytes" disabled>Loading bytes...</button>
+<p id="error"></p>
+<script type="module">
+  import { ArPlayer } from "../index.js";
+
+  const $ = (id) => document.getElementById(id);
+  $("support").textContent = ArPlayer.checkSupport()
+    ? "AR Quick Look is supported here."
+    : "AR Quick Look is not supported here.";
+
+  // Runs a launch, showing why it failed. On unsupported platforms the buttons stay enabled to show the error.
+  function launch(run) {
+    $("error").textContent = "";
+    try {
+      run();
+    } catch (e) {
+      $("error").textContent = String(e);
+    }
+  }
+
+  $("from-url").onclick = () => launch(() => ArPlayer.launchUrl($("url").value.trim()));
+
+  // Loaded up front: launchBytes must run straight from the tap, with no await before it
+  const bytes = new Uint8Array(await (await fetch("deck.usdz")).arrayBuffer());
+  $("from-bytes").textContent = `AR Preview from bytes (${bytes.length} B)`;
+  $("from-bytes").disabled = false;
+  $("from-bytes").onclick = () => launch(() => ArPlayer.launchBytes(bytes));
+</script>
+</body>
+</html>
