@@ -2,6 +2,11 @@
   "name": "@arctuition/ar-player",
   "version": "0.1.0",
   "description": "Open USDZ models in AR Quick Look on iPhone and iPad, at true size.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Arctuition/arcsite_webar.git",
+    "directory": "web/arcsite_ar_player"
+  },
   "type": "module",
   "exports": {
     ".": {

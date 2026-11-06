@@ -6,7 +6,7 @@
 dependencies:
   arcsite_ar_player:
     git:
-      url: https://github.com/Arctuition/webar.git
+      url: https://github.com/Arctuition/arcsite_webar.git
       path: flutter/arcsite_ar_player
       ref: main
 ```

@@ -3,7 +3,7 @@
 ## 模块设计
 
 ```
-webar/
+arcsite_webar/
 ├── app/                      后端
 ├── static/                   网页
 ├── shared/quicklook/         共享模块
