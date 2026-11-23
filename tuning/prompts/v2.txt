@@ -1,0 +1,26 @@
+[IMAGE photo]
+Image 1 is a real photo of a house. Edit THIS photo: build the planned deck described below onto the house, as if it had really been built, and output the edited photo.
+
+Keep image 1's camera exactly: the same viewpoint, height, lens, framing and aspect ratio. Do not zoom, crop, raise or move the camera, and do not switch to the viewpoint of images 2 to 4. Keep the same house with its walls, siding, doors, windows, roof and colours, and everything else in the yard. Only the light and the lawn may change, as the style below says.
+
+Where the deck goes: if the photo already shows a deck or patio against the house, remove it and build this deck in its place. Otherwise attach the deck to the wall of the house that faces the camera most directly, where a backyard deck would go; keep it clear of garage doors and driveways when the photo allows.
+
+[IMAGE top]
+[IMAGE left-front]
+[IMAGE right-front]
+Images 2 to 4 are 3D renders of the planned deck only, not of this house: image 2 from straight above with the house side at the top, image 3 from the front left, image 4 from the front right. In them only the deck, its railing, stairs and furniture are real; the wall, ground and sky are placeholders, never copy them. Use them for the deck's outline, proportions, stairs, railing and where each piece of furniture stands, then show that same deck from image 1's camera.
+
+THE DECK
+{deck}
+
+FURNITURE
+{furniture}
+
+RAILING
+Wherever the deck touches the house wall there is no railing, no posts and no gap: the boards run right up to the wall. Railing stands only on the open edges. Never put railing across a door; a door in the wall opens straight onto the deck.
+
+STYLE
+{look}
+Late-afternoon golden-hour light with soft dappled shadows, lush green lawn.
+
+Photorealistic. No people, no text, no watermark, no pergola.

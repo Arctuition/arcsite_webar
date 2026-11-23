@@ -1,0 +1,13 @@
+{
+  "height_in": 48.0,
+  "outline": [[0.0, 14.0], [0.0, 0.0], [11.0, 0.0], [11.0, 6.3], [20.0, 6.3], [20.0, 14.0]],
+  "ledger": [5],
+  "house": [],
+  "railing": [{"edges": [0, 1, 2, 3, 4], "height_in": 36.0}],
+  "stairs": [{"edge": 1, "from": 3.715, "width": 4.0, "risers": 7}],
+  "furniture": [
+    {"kind": "hot_tub_rect", "center": [5.426, 10.063], "angle": 0.0, "width": 7.0, "depth": 5.0, "height_in": 36.0, "base_in": 0.0},
+    {"kind": "fire_pit", "center": [3.369, 3.462], "angle": 0.0, "width": 3.004, "depth": 3.004, "height_in": 16.75, "base_in": 0.0},
+    {"kind": "fire_pit", "center": [17.202, 10.828], "angle": 0.0, "width": 3.004, "depth": 3.004, "height_in": 16.75, "base_in": 0.0}
+  ]
+}
