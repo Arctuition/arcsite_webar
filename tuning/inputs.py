@@ -173,29 +173,44 @@ anything. Output the edited photo."""
 def cleaned(photo: str, jpeg: bytes, model: str = "gemini-3.1-flash-image") -> bytes:
     """The photo with its existing deck or patio removed (one Gemini edit, cached under out/clean/), scaled back to the
     photo's pixel size so the engine render still lines up. Photos the wall analysis found no deck in come back as is."""
-    from . import camera, providers
+    from . import camera
 
     marks = json.loads(camera.CACHE.read_text()).get(photo, {}) if camera.CACHE.exists() else {}
     if not marks.get("existing_deck"):
         return jpeg
     path = HERE / "out" / "clean" / f"{photo}.jpg"
     if not path.exists():
-        size = Image.open(io.BytesIO(jpeg)).size
-        image, _ = providers.edit(model, [CLEAN_PROMPT, ("photo", jpeg)], size)
-        im = Image.open(io.BytesIO(image)).convert("RGB").resize(size, Image.LANCZOS)
         path.parent.mkdir(parents=True, exist_ok=True)
-        im.save(path, "JPEG", quality=92)
+        path.write_bytes(clean_photo(jpeg, model))
     return path.read_bytes()
 
 
-def above_ground(deck_png: Path, ground_png: Path, tolerance: float = 40.0) -> Image.Image:
+def clean_photo(jpeg: bytes, model: str = "gemini-3.1-flash-image") -> bytes:
+    """One Gemini edit that removes the photo's existing deck or patio, uncached; a JPEG 92 at the photo's pixel size."""
+    from . import providers
+
+    size = Image.open(io.BytesIO(jpeg)).size
+    image, _ = providers.edit(model, [CLEAN_PROMPT, ("photo", jpeg)], size)
+    im = Image.open(io.BytesIO(image)).convert("RGB").resize(size, Image.LANCZOS)
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=92)
+    return out.getvalue()
+
+
+def _image(src: Path | bytes | Image.Image) -> Image.Image:
+    if isinstance(src, Image.Image):
+        return src
+    return Image.open(io.BytesIO(src) if isinstance(src, (bytes, bytearray)) else src)
+
+
+def above_ground(deck_png: Path | bytes | Image.Image, ground_png: Path | bytes | Image.Image, tolerance: float = 40.0) -> Image.Image:
     """The deck render without what lies under the ground (pier footings): the same camera rendered once without the
     ground (transparent around the deck) and once with it. A deck pixel the ground render shows differently is hidden
     by the ground there, so it goes. Pixels past the ground disc, or on its faded rim, stay."""
     import numpy as np
 
-    deck = np.asarray(Image.open(deck_png).convert("RGBA")).astype(np.float32)
-    ground = np.asarray(Image.open(ground_png).convert("RGBA")).astype(np.float32)
+    deck = np.asarray(_image(deck_png).convert("RGBA")).astype(np.float32)
+    ground = np.asarray(_image(ground_png).convert("RGBA")).astype(np.float32)
     diff = np.linalg.norm(deck[..., :3] - ground[..., :3], axis=2)
     buried = (deck[..., 3] > 0) & (ground[..., 3] > 200) & (diff > tolerance)
     try:

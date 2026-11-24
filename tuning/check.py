@@ -29,14 +29,17 @@ def _gradients(grey: np.ndarray, sigma: float = 1.5):
     return cv2.Sobel(g, cv2.CV_32F, 1, 0), cv2.Sobel(g, cv2.CV_32F, 0, 1)
 
 
-def drift(output: bytes, composite: bytes, deck_alpha: Image.Image) -> float:
-    """How much of the composite's structure, outside the deck, the output kept: about 1 = all, about 0 = redrawn."""
+def drift(output: bytes, composite: bytes, deck_alpha: Image.Image, ignore: list | None = None) -> float:
+    """How much of the composite's structure, outside the deck, the output kept: about 1 = all, about 0 = redrawn.
+    [ignore]: boxes [y0, x0, y1, x1] in 0-1000 the output may change too (an old deck it was told to remove)."""
     import cv2
 
     ref = Image.open(io.BytesIO(composite))
     size = (WIDTH, round(WIDTH * ref.height / ref.width))
     deck = np.asarray(deck_alpha.convert("L").resize(size)) > 8
     keep = ~(cv2.dilate(deck.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0)
+    for y0, x0, y1, x1 in ignore or []:
+        keep[round(y0 * size[1] / 1000):round(y1 * size[1] / 1000), round(x0 * size[0] / 1000):round(x1 * size[0] / 1000)] = False
     rx, ry = _gradients(np.asarray(ref.convert("L").resize(size, Image.LANCZOS)))
     ox, oy = _gradients(np.asarray(Image.open(io.BytesIO(output)).convert("L").resize(size, Image.LANCZOS)))
     dot = (rx * ox + ry * oy)[keep].sum()

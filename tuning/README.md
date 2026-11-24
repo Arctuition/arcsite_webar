@@ -33,3 +33,13 @@
 - `deck.json`：示例 deck（L 形，热水池 + 两个火盆），画布导出格式。
 - `out/<run>/`（不提交）：每格一张图、`run.json`（prompt 原文、耗时、错误）和对比页 `index.html`。
 - 密钥只从环境变量 `OPENAI_API_KEY` / `GEMINI_API_KEY` 读，不打印。
+
+## 两步版接口（`app/deck_render.py`）
+
+一步版 `POST /api/deck/render` 保留；画布改用两步：
+
+1. `POST /api/deck/wall` `{photo, deck}`：photo 是画布准备好的 JPEG（长边 2048、质量 92），deck 是引擎导出的 deck（含 `walls`）。服务端用 Gemini 3.8 Flash 标墙（`camera.mark_wall`，不走 `out/walls.json` 缓存）、检测直线、解相机、沿墙放 deck，返回 `{job, width, height, camera, wall, seconds}`；`camera` 原样传给 `AR_Web_RenderDeckPhotoDiagram`。照片里已有 deck 时，立刻在后台去掉它（`inputs.clean_photo`）。解不出相机 422，Gemini 出错 502。
+2. 画布用这个相机渲两张透明图：只有 deck（隐藏房子和地面），和带地面的（只隐藏房子）。
+3. `POST /api/deck/compose` `{job, deck_png, ground_png, style, model?, prompt?, retry?}`：去掉埋在地下的部分（`inputs.above_ground`），贴到干净照片上，按 `prompt`（默认 `auto`：看得见 deck 地板用 v10c，否则 v10e）让 Gemini 3.1 Flash 出图，按 `check` 打分，最多重试 `retry` 次（默认 2）。返回图、每次的分数、`passed`、`cleaned`。job 30 分钟过期（404）。
+
+每次请求的输入输出存在 `out/live/<时间>-two-step/`（photo、clean、deck/ground 渲染、composite、result、`wall.json`、`meta.json`）。

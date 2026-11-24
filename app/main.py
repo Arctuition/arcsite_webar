@@ -21,6 +21,8 @@ from urllib.parse import quote, unquote
 import segno
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -53,6 +55,15 @@ app = FastAPI(title="Deck Web AR PoC")
 app.add_middleware(CORSMiddleware, allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
                    allow_methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
 app.include_router(deck_render.router)
+
+
+@app.exception_handler(RequestValidationError)
+async def deck_bad_request(request: Request, exc: RequestValidationError):
+    """The two-step deck rendering answers bad input with 400 and a string detail (its 422 means no usable wall)."""
+    if request.url.path not in ("/api/deck/wall", "/api/deck/compose"):
+        return await request_validation_exception_handler(request, exc)
+    detail = "; ".join(f"{'.'.join(map(str, e.get('loc', ())))}: {e.get('msg')}" for e in exc.errors())
+    return JSONResponse({"detail": detail or "bad request"}, status_code=400)
 
 
 @app.middleware("http")

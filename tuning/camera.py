@@ -68,12 +68,17 @@ def analyze(name: str, jpeg: bytes, refresh: bool = False) -> dict:
     """The model's marks for one photo, cached per photo name under out/ so runs agree."""
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
     if refresh or name not in cache:
-        from app import gemini
-
-        cache[name] = gemini.analyze([WALL_PROMPT, (jpeg, "image/jpeg")], timeout=120)
+        cache[name] = mark_wall(jpeg)
         CACHE.parent.mkdir(parents=True, exist_ok=True)
         CACHE.write_text(json.dumps(cache, indent=1))
     return cache[name]
+
+
+def mark_wall(jpeg: bytes) -> dict:
+    """The model's marks for a photo, uncached (raises app.gemini.GeminiError)."""
+    from app import gemini
+
+    return gemini.analyze([WALL_PROMPT, (jpeg, "image/jpeg")], timeout=120)
 
 
 # ---------------------------------------------------------------- geometry helpers

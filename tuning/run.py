@@ -118,7 +118,13 @@ def main() -> None:
         photo, style, model, parts, size, k = job
         cell = f"{photo}__{style}__{model}" + (f"__{k + 1}" if k else "")
         t0 = time.time()
-        comp = next((p[1] for p in parts if not isinstance(p, str) and p[0].startswith("composite")), None)
+        comp_part = next((p for p in parts if not isinstance(p, str) and p[0].startswith("composite")), None)
+        comp = comp_part[1] if comp_part else None
+        ignore = None
+        if comp_part and comp_part[0] == "composite":  # pasted on the photo itself: the model removes the old deck
+            from . import camera
+            old = (json.loads(camera.CACHE.read_text()).get(photo, {}) if camera.CACHE.exists() else {}).get("existing_deck")
+            ignore = [old["box"]] if old else None
         try:
             scores, best = [], None
             for attempt in range(args.retry + 1):
@@ -127,7 +133,7 @@ def main() -> None:
                     best = (0, image, note)
                     break
                 alpha = Image.open(HERE / "engine" / style / f"{photo}.png").getchannel("A")
-                sc = {"photo": round(check.drift(image, comp, alpha), 2), "deck": round(check.deck(image, comp, alpha), 2)}
+                sc = {"photo": round(check.drift(image, comp, alpha, ignore), 2), "deck": round(check.deck(image, comp, alpha), 2)}
                 scores.append(sc)
                 if best is None or check.rank(sc) > best[0]:
                     best = (check.rank(sc), image, note)

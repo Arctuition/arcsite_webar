@@ -1,26 +1,45 @@
-"""One-step deck photo rendering, for the canvas to call while the prompt is being tuned.
+"""Deck photo rendering for the canvas, while the prompt is being tuned (see tuning/README.md).
 
-POST /api/deck/render with the photo, the three 3D-view references, the canvas's deck JSON and the
-style; answers with the rendering. One model call, no photo analysis and no placement: the model
-puts the deck on the house itself (see tuning/README.md).
+One step -- POST /api/deck/render with the photo, the three 3D-view references, the canvas's deck JSON and the
+style; one model call, no photo analysis and no placement: the model puts the deck on the house itself.
+
+Two steps -- the engine draws the deck from the photo's own camera:
+  POST /api/deck/wall     the photo and the deck: the wall marked by Gemini, the camera solved, the deck placed along
+                          the wall; answers with a job and the camera for AR_Web_RenderDeckPhotoDiagram. A photo with
+                          a deck already on it starts being cleaned (that deck removed) in the background.
+  POST /api/deck/compose  the job and the engine's two transparent renders (the deck alone, and with the ground): the
+                          deck pasted on the clean photo and made real by Gemini, retried while tuning.check says the
+                          photo or the deck was redrawn.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import concurrent.futures as cf
 import datetime as dt
 import io
 import json
+import logging
+import math
+import re
+import secrets
+import threading
 import time
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from tuning import providers
-from tuning.describe import describe
-from tuning.run import HERE as TUNING_DIR, build_parts, prompt_text
+from app import gemini
+from tuning import camera, check, inputs, providers
+from tuning.describe import _edge_no, describe
+from tuning.run import FLOOR_SEEN_FT, HERE as TUNING_DIR, build_parts, prompt_text
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -100,4 +119,281 @@ async def render(req: RenderRequest) -> dict:
         "model": model,
         "prompt_version": prompt_name,
         "prompt": prompt_text(parts),
+    }
+
+
+# ================================================================ two steps
+
+CLEAN_MODEL = "gemini-3.1-flash-image"
+COMPOSE_MODEL = "gemini-3.1-flash-image"
+JOB_TTL_S = 30 * 60
+PROMPT_NAME = re.compile(r"[\w-]+")
+
+_jobs: dict[str, "Job"] = {}
+_jobs_lock = threading.Lock()
+_cleaner = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="deck-clean")
+
+
+@dataclass
+class Job:
+    created: float
+    photo: bytes
+    size: tuple[int, int]
+    deck: dict
+    marks: dict
+    cam: dict
+    placement: dict
+    engine: dict
+    clean: cf.Future | None  # None: the photo had no deck to remove
+    out: Path
+    composes: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def _sweep() -> None:
+    now = time.time()
+    with _jobs_lock:
+        for key in [k for k, j in _jobs.items() if now - j.created > JOB_TTL_S]:
+            del _jobs[key]  # a clean still running finishes and is dropped; a compose holding the job still gets it
+
+
+def _as_jpeg_photo(data: bytes) -> tuple[bytes, tuple[int, int]]:
+    """The photo as sent (a JPEG, as the canvas prepares it); anything else is re-encoded as JPEG 92."""
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+    except Exception as err:
+        raise HTTPException(400, "photo is not an image") from err
+    if im.format == "JPEG":
+        return data, im.size
+    out = io.BytesIO()
+    im.convert("RGB").save(out, "JPEG", quality=92)
+    return out.getvalue(), im.size
+
+
+def _house_wall(deck: dict) -> dict | None:
+    """The engine's exported wall run on the deck's ledger edge, else the first one, else none (old engines)."""
+    walls = [w for w in deck.get("walls") or [] if isinstance(w, dict) and "a" in w and "b" in w]
+    ledger = {_edge_no(e) for e in deck.get("ledger") or []}
+    return next((w for w in walls if w.get("edge") in ledger), walls[0] if walls else None)
+
+
+def _finite(values) -> bool:
+    return all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
+
+
+def _solve(marks: dict, jpeg: bytes, size: tuple[int, int], deck: dict) -> tuple[dict, dict, dict]:
+    """camera.solve + place + engine_camera; raises ValueError with a reason when no usable camera comes out."""
+    w, h = size
+    try:
+        if not marks.get("base_line") and not (marks.get("existing_deck") or {}).get("surface_line"):
+            raise ValueError("the analysis found no wall ground line (nor an existing deck's floor line) in the photo")
+        cam = camera.solve(marks, w, h, camera.detect_lines(jpeg))
+        if not _finite([cam["wall_length_ft"], cam["camera_height_ft"], cam["hfov_deg"]]) or cam["wall_length_ft"] <= 0:
+            raise ValueError("the solved camera is degenerate (wall length or camera height is not usable)")
+        placement = camera.place(deck, cam, _house_wall(deck))
+        eng = camera.engine_camera(deck, cam, placement)
+    except ValueError:
+        raise
+    except Exception as err:  # marks of the wrong shape (AttributeError, TypeError, ...), cv2.error from the lines
+        log.warning("deck wall: the marks could not be solved", exc_info=True)
+        raise ValueError(f"the wall marks could not be solved: {err!r}") from err
+    engine = {"projection": "perspective", "eye": [float(v) for v in eng["eye"]],
+              "target": [float(v) for v in eng["target"]], "up": [float(v) for v in eng["up"]],
+              "fovDeg": float(eng["fovDeg"])}
+    if not _finite(engine["eye"] + engine["target"] + engine["up"] + [engine["fovDeg"]]):
+        raise ValueError("the solved camera is degenerate (not finite)")
+    placement = {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in placement.items()}
+    return cam, placement, engine
+
+
+def _write(out: Path, files: dict[str, bytes | str | dict]) -> None:
+    """Keep what went in and came out under tuning/out/live/ (not committed); never fails the request."""
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        for name, data in files.items():
+            if isinstance(data, dict):
+                data = json.dumps(data, indent=2, default=str)
+            (out / name).write_bytes(data if isinstance(data, bytes) else data.encode())
+    except OSError as err:
+        log.warning("could not keep %s: %s", out, err)
+
+
+class WallRequest(BaseModel):
+    photo: str = Field(description="the house photo, base64 JPEG (long side 2048, quality 92)")
+    deck: dict = Field(description="the deck as the engine exports it (DeckPhotoDeck.json)")
+
+
+@router.post("/api/deck/wall")
+async def deck_wall(req: WallRequest) -> dict:
+    _sweep()
+    t0 = time.time()
+    photo, size = await run_in_threadpool(_as_jpeg_photo, _decode("photo", req.photo))
+    try:
+        describe(req.deck)
+        float(req.deck["height_in"])
+    except (KeyError, ValueError, TypeError, IndexError) as err:
+        raise HTTPException(400, f"deck: {err}") from err
+
+    try:
+        marks = await run_in_threadpool(camera.mark_wall, photo)
+    except gemini.GeminiError as err:
+        raise HTTPException(502, f"wall analysis: {err}") from err
+    if not isinstance(marks, dict):
+        raise HTTPException(502, "wall analysis: the answer is not a JSON object")
+    try:
+        cam, placement, engine = await run_in_threadpool(_solve, marks, photo, size, req.deck)
+    except ValueError as err:
+        raise HTTPException(422, str(err)) from err
+    existing = bool(marks.get("existing_deck"))  # the paid clean starts only once the camera is usable
+    clean = _cleaner.submit(inputs.clean_photo, photo, CLEAN_MODEL) if existing else None
+
+    key = secrets.token_urlsafe(12)
+    out = TUNING_DIR / "out" / "live" / f"{dt.datetime.now():%m%d-%H%M%S}-two-step"
+    wall = {"label": marks.get("label"), "hfov_deg": float(cam["hfov_deg"]),
+            "camera_height_ft": float(cam["camera_height_ft"]), "wall_length_ft": float(cam["wall_length_ft"]),
+            "placement": placement, "existing_deck": existing}
+    with _jobs_lock:
+        _jobs[key] = Job(time.time(), photo, size, req.deck, marks, cam, placement, engine, clean, out)
+    seconds = round(time.time() - t0, 1)
+    solved = {k: v for k, v in cam.items() if k not in ("snapped_lines",)}
+    await run_in_threadpool(_write, out, {"photo.jpg": photo, "deck.json": req.deck, "wall.json": {
+        "job": key, "size": size, "marks": marks, "solved": solved, "wall": wall, "camera": engine,
+        "seconds": seconds}})
+    log.info("deck wall %s: %s, %.1f s", key, wall["label"], seconds)
+    return {"job": key, "width": size[0], "height": size[1], "camera": engine, "wall": wall, "seconds": seconds}
+
+
+class ComposeRequest(BaseModel):
+    job: str
+    deck_png: str = Field(description="the engine's render of the deck alone, transparent, base64 PNG")
+    ground_png: str = Field(description="the same camera with the ground shown, base64 PNG")
+    style: str
+    model: str | None = None
+    prompt: str | None = None  # "auto" (default): v10c when the camera sees the deck floor, else v10e
+    retry: int = Field(2, ge=0, le=4)
+
+
+def _render_png(name: str, data: bytes, size: tuple[int, int]) -> Image.Image:
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+    except Exception as err:
+        raise HTTPException(400, f"{name} is not an image") from err
+    im = im.convert("RGBA")
+    return im if im.size == size else im.resize(size, Image.LANCZOS)
+
+
+def _composite(clean: bytes, deck: Image.Image) -> bytes:
+    out = io.BytesIO()
+    Image.alpha_composite(Image.open(io.BytesIO(clean)).convert("RGBA"), deck).convert("RGB").save(out, "JPEG", quality=92)
+    return out.getvalue()
+
+
+def _png(im: Image.Image) -> bytes:
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
+
+
+def _attempts(model: str, parts: list, size: tuple[int, int], composite: bytes, alpha: Image.Image, retry: int):
+    """Up to 1 + retry edits; stop at the first that keeps the photo and the deck, else keep the best by check.rank.
+    A provider failure after a scored result keeps that result; before one, it is raised."""
+    scores, best = [], None
+    for _ in range(retry + 1):
+        try:
+            image, _note = providers.edit(model, parts, size)
+        except providers.ProviderError:
+            if best is None:
+                raise
+            log.warning("deck compose: a retry failed, keeping the best so far", exc_info=True)
+            break
+        sc = {"photo": round(check.drift(image, composite, alpha), 2), "deck": round(check.deck(image, composite, alpha), 2)}
+        scores.append(sc)
+        if best is None or check.rank(sc) > best[0]:
+            best = (check.rank(sc), image, sc)
+        if check.passes(sc):
+            break
+    return best[1], best[2], scores
+
+
+@router.post("/api/deck/compose")
+async def deck_compose(req: ComposeRequest) -> dict:
+    _sweep()
+    t0 = time.time()
+    looks = json.loads((TUNING_DIR / "styles.json").read_text())
+    if req.style not in looks:
+        raise HTTPException(400, f"unknown style {req.style}")
+    with _jobs_lock:
+        job = _jobs.get(req.job)
+    if job is None:
+        raise HTTPException(404, "unknown or expired job; send the photo to /api/deck/wall again")
+    prompt_name = req.prompt or "auto"
+    if prompt_name == "auto":
+        seen = job.cam["camera_height_ft"] > float(job.deck["height_in"]) / 12 + FLOOR_SEEN_FT
+        prompt_name = "v10c" if seen else "v10e"
+    template_path = TUNING_DIR / "prompts" / f"{prompt_name}.txt"
+    if not PROMPT_NAME.fullmatch(prompt_name) or not template_path.is_file():
+        raise HTTPException(400, f"unknown prompt {prompt_name}")
+    model = req.model or COMPOSE_MODEL
+    deck_raw, ground_raw = _decode("deck_png", req.deck_png), _decode("ground_png", req.ground_png)
+
+    def above() -> Image.Image:
+        return inputs.above_ground(_render_png("deck_png", deck_raw, job.size), _render_png("ground_png", ground_raw, job.size))
+
+    deck_im = await run_in_threadpool(above)
+    t_clean = time.time()
+    if job.clean is None:
+        clean = job.photo
+    else:
+        try:
+            clean = await asyncio.wrap_future(job.clean)
+        except Exception as err:  # providers.ProviderError, or an answer that is not an image
+            raise HTTPException(502, f"removing the existing deck: {err}") from err
+    clean_wait = round(time.time() - t_clean, 1)
+    composite = await run_in_threadpool(_composite, clean, deck_im)
+    alpha = deck_im.getchannel("A")
+
+    deck_text, furniture = describe(job.deck)
+    try:
+        parts = build_parts(template_path.read_text(), clean, {"composite-clean": composite, "clean": clean},
+                            deck_text, furniture, looks[req.style])
+    except KeyError as err:
+        raise HTTPException(400, f"prompt {prompt_name} needs an image this flow does not have: {err}") from err
+
+    try:
+        image, scores, attempts = await run_in_threadpool(_attempts, model, parts, job.size, composite, alpha, req.retry)
+    except providers.ProviderError as err:
+        raise HTTPException(502, str(err)) from err
+    jpeg = await run_in_threadpool(providers.as_jpeg, image)
+    width, height = Image.open(io.BytesIO(jpeg)).size
+    passed = check.passes(scores)
+    seconds = round(time.time() - t0, 1)
+    text = prompt_text(parts)
+
+    with job.lock:
+        job.composes += 1
+        out = job.out if job.composes == 1 else job.out / f"compose-{job.composes}"
+    files = {"deck.png": deck_raw, "ground.png": ground_raw, "deck-above-ground.png": await run_in_threadpool(_png, deck_im),
+             "composite.jpg": composite, "result.jpg": jpeg, "meta.json": {
+                 "job": req.job, "style": req.style, "model": model, "prompt_version": prompt_name, "retry": req.retry,
+                 "camera": job.engine, "camera_height_ft": job.cam["camera_height_ft"], "placement": job.placement,
+                 "attempts": attempts, "kept": scores, "passed": passed, "cleaned": job.clean is not None,
+                 "seconds": seconds, "clean_wait_s": clean_wait, "prompt": text}}
+    if job.clean is not None:
+        files["clean.jpg"] = clean
+    await run_in_threadpool(_write, out, files)
+    log.info("deck compose %s: %s %s %s, %s, %.1f s", req.job, req.style, model, prompt_name, attempts, seconds)
+    return {
+        "image": base64.b64encode(jpeg).decode(),
+        "mime": "image/jpeg",
+        "width": width,
+        "height": height,
+        "seconds": seconds,
+        "model": model,
+        "prompt_version": prompt_name,
+        "prompt": text,
+        "attempts": attempts,
+        "passed": passed,
+        "cleaned": job.clean is not None,
     }
