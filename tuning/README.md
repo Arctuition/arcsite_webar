@@ -40,6 +40,6 @@
 
 1. `POST /api/deck/wall` `{photo, deck}`：photo 是画布准备好的 JPEG（长边 2048、质量 92），deck 是引擎导出的 deck（含 `walls`）。服务端用 Gemini 3.8 Flash 标墙（`camera.mark_wall`，不走 `out/walls.json` 缓存）、检测直线、解相机、沿墙放 deck，返回 `{job, width, height, camera, wall, seconds}`；`camera` 原样传给 `AR_Web_RenderDeckPhotoDiagram`。照片里已有 deck 时，立刻在后台去掉它（`inputs.clean_photo`）。解不出相机 422，Gemini 出错 502。
 2. 画布用这个相机渲两张透明图：只有 deck（隐藏房子和地面），和带地面的（只隐藏房子）。
-3. `POST /api/deck/compose` `{job, deck_png, ground_png, style, model?, prompt?, retry?}`：去掉埋在地下的部分（`inputs.above_ground`），贴到干净照片上，按 `prompt`（默认 `auto`：看得见 deck 地板用 v10c，否则 v10e）让 Gemini 3.1 Flash 出图，按 `check` 打分，最多重试 `retry` 次（默认 2）。返回图、每次的分数、`passed`、`cleaned`。job 30 分钟过期（404）。
+3. `POST /api/deck/compose` `{job, deck_png, ground_png, style, model?, prompt?, retry?}`：去掉埋在地下的部分（`inputs.above_ground`），贴到干净照片上，按 `prompt`（默认 `auto`：看得见 deck 地板用 v10k，否则 v10j；两者分别是 v10c、v10e 加上 `camera.stairs_note` 算出的楼梯位置：楼梯伸出画面时说明它从哪边出画、别处不加楼梯，楼梯都在画面里时与 v10c、v10e 一字不差）让 Gemini 3.1 Flash 出图，按 `check` 打分，最多重试 `retry` 次（默认 2）。返回图、每次的分数、`passed`、`cleaned`。job 30 分钟过期（404）。
 
 每次请求的输入输出存在 `out/live/<时间>-two-step/`（photo、clean、deck/ground 渲染、composite、result、`wall.json`、`meta.json`）。

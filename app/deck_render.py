@@ -126,6 +126,7 @@ async def render(req: RenderRequest) -> dict:
 
 CLEAN_MODEL = "gemini-3.1-flash-image"
 COMPOSE_MODEL = "gemini-3.1-flash-image"
+WALL_TRIES = 2
 JOB_TTL_S = 30 * 60
 PROMPT_NAME = re.compile(r"[\w-]+")
 
@@ -235,16 +236,22 @@ async def deck_wall(req: WallRequest) -> dict:
     except (KeyError, ValueError, TypeError, IndexError) as err:
         raise HTTPException(400, f"deck: {err}") from err
 
-    try:
-        marks = await run_in_threadpool(camera.mark_wall, photo)
-    except gemini.GeminiError as err:
-        raise HTTPException(502, f"wall analysis: {err}") from err
-    if not isinstance(marks, dict):
-        raise HTTPException(502, "wall analysis: the answer is not a JSON object")
-    try:
-        cam, placement, engine = await run_in_threadpool(_solve, marks, photo, size, req.deck)
-    except ValueError as err:
-        raise HTTPException(422, str(err)) from err
+    # The model's marks differ from call to call, and now and then give no camera (one in two angled tries, 11-24):
+    # asked once more before the photo is given up on.
+    for attempt in range(WALL_TRIES):
+        try:
+            marks = await run_in_threadpool(camera.mark_wall, photo)
+        except gemini.GeminiError as err:
+            raise HTTPException(502, f"wall analysis: {err}") from err
+        if not isinstance(marks, dict):
+            raise HTTPException(502, "wall analysis: the answer is not a JSON object")
+        try:
+            cam, placement, engine = await run_in_threadpool(_solve, marks, photo, size, req.deck)
+            break
+        except ValueError as err:
+            log.warning("deck wall: try %d of %d gave no camera: %s", attempt + 1, WALL_TRIES, err)
+            if attempt + 1 == WALL_TRIES:
+                raise HTTPException(422, str(err)) from err
     existing = bool(marks.get("existing_deck"))  # the paid clean starts only once the camera is usable
     clean = _cleaner.submit(inputs.clean_photo, photo, CLEAN_MODEL) if existing else None
 
@@ -270,7 +277,7 @@ class ComposeRequest(BaseModel):
     ground_png: str = Field(description="the same camera with the ground shown, base64 PNG")
     style: str
     model: str | None = None
-    prompt: str | None = None  # "auto" (default): v10c when the camera sees the deck floor, else v10e
+    prompt: str | None = None  # "auto" (default): v10k when the camera sees the deck floor, else v10j
     retry: int = Field(2, ge=0, le=4)
 
 
@@ -331,7 +338,7 @@ async def deck_compose(req: ComposeRequest) -> dict:
     prompt_name = req.prompt or "auto"
     if prompt_name == "auto":
         seen = job.cam["camera_height_ft"] > float(job.deck["height_in"]) / 12 + FLOOR_SEEN_FT
-        prompt_name = "v10c" if seen else "v10e"
+        prompt_name = "v10k" if seen else "v10j"
     template_path = TUNING_DIR / "prompts" / f"{prompt_name}.txt"
     if not PROMPT_NAME.fullmatch(prompt_name) or not template_path.is_file():
         raise HTTPException(400, f"unknown prompt {prompt_name}")
@@ -355,9 +362,14 @@ async def deck_compose(req: ComposeRequest) -> dict:
     alpha = deck_im.getchannel("A")
 
     deck_text, furniture = describe(job.deck)
+    try:  # where the stairs fall in this photo; a flight running out of the frame is named, so none is made up
+        stairs = camera.stairs_note(job.deck, job.cam, job.placement)
+    except Exception:  # noqa: BLE001 -- an odd stairs entry must not cost the rendering
+        log.warning("deck compose: no stairs note", exc_info=True)
+        stairs = camera.IN_VIEW_STAIRS
     try:
         parts = build_parts(template_path.read_text(), clean, {"composite-clean": composite, "clean": clean},
-                            deck_text, furniture, looks[req.style])
+                            deck_text, furniture, looks[req.style], stairs)
     except KeyError as err:
         raise HTTPException(400, f"prompt {prompt_name} needs an image this flow does not have: {err}") from err
 

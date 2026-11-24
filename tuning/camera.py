@@ -477,6 +477,51 @@ def deck_points(deck: dict, placement: dict):
     return outline, stairs
 
 
+def _side(x: float, w: int) -> str:
+    return "left" if x < w / 3 else "right" if x > 2 * w / 3 else "middle"
+
+
+IN_VIEW_STAIRS = "The deck has only the stairs shown in image 1; add no other stairs or steps."
+
+
+def stairs_note(deck: dict, cam: dict, placement: dict) -> str:
+    """Where the design's stairs are in the picture, for the prompt: a model shown only the stub of a flight that runs
+    out of the frame adds stairs of its own where it thinks they belong (round r25 / the live angled photo)."""
+    _, stairs = deck_points(deck, placement)
+    if not stairs:
+        return "The deck has no stairs: add no stairs or steps anywhere."
+    w, h = cam["size"]
+
+    def inside(p) -> bool:
+        return not np.isnan(p).any() and 0 <= p[0] < w and 0 <= p[1] < h
+
+    flights = []  # each as a predicate: "<verb> ..."
+    for s in stairs:
+        top, foot = project(cam, s[:2]), project(cam, s[2:])
+        if all(inside(p) for p in [*top, *foot]):
+            flights.append(f"come down at the {_side(float(np.mean(top[:, 0])), w)} of the picture, as image 1 shows")
+            continue
+        out = np.nanmean(foot if not np.isnan(foot).all() else top, axis=0)
+        edge = "left" if out[0] < 0 else "right" if out[0] >= w else "bottom" if out[1] >= h else "top"
+        if any(inside(p) for p in top):
+            flights.append(f"start at the {_side(float(np.nanmean(top[:, 0])), w)} of the picture and run down out of it "
+                           f"past its {edge} edge, so only their top is in view")
+        else:
+            flights.append(f"are out of the picture, past its {edge} edge")
+    if all(f.startswith("come down") for f in flights):
+        # every flight in view: the plain line (v10c / v10e); naming where they are made the front photo redrawn (r28)
+        return IN_VIEW_STAIRS
+    if len(flights) == 1:
+        said = "The deck's only stairs " + flights[0]
+    else:
+        said = f"The deck has {len(flights)} flights of stairs: " + "; ".join(
+            f"flight {i + 1} " + f.replace("come down", "comes down").replace("start at", "starts at")
+            .replace(" run down", " runs down").replace("are out", "is out").replace("their top", "its top")
+            for i, f in enumerate(flights))
+    return said + (". There are no other stairs or steps: add none anywhere, not even below a door or at the deck's "
+                   "other edges.")
+
+
 def engine_camera(deck: dict, cam: dict, placement: dict) -> dict:
     """The solved camera in the engine's deck frame (outline feet, z up) for AR_Web_RenderDeckPhotoDiagram."""
     from .describe import Frame

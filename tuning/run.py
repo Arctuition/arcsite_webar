@@ -30,9 +30,10 @@ FLOOR_SEEN_FT = 1.0  # camera this far above the deck floor: the floor and its f
 VIEWS = ["top", "left-front", "right-front"]
 
 
-def build_parts(template: str, photo: bytes, refs, deck_text: str, furniture: str, look: str) -> list:
+def build_parts(template: str, photo: bytes, refs, deck_text: str, furniture: str, look: str, stairs: str = "") -> list:
     """[refs]: the images by name, a dict or a function of the name ([IMAGE <name>] in the template)."""
-    text = template.replace("{deck}", deck_text).replace("{furniture}", furniture).replace("{look}", look)
+    text = (template.replace("{deck}", deck_text).replace("{furniture}", furniture).replace("{look}", look)
+            .replace("{stairs}", stairs))
     image = refs if callable(refs) else refs.__getitem__
     parts: list = []
     for chunk in re.split(r"(\[IMAGE [\w-]+\])", text):
@@ -67,15 +68,22 @@ def main() -> None:
     args = ap.parse_args()
 
     def template_for(photo_stem: str) -> str:
-        """"auto": the furniture list (v10c) only when the camera sees the deck floor, else none (v10e): told to keep
+        """"auto": the furniture list (v10k) only when the camera sees the deck floor, else none (v10j): told to keep
         furniture it cannot see, the model raises the camera to show it."""
         name = args.prompt
         if name == "auto":
             cams = json.loads((HERE / "out" / "camera" / "cameras.json").read_text())
             seen = cams[photo_stem]["camera_height_ft"] > deck["height_in"] / 12 + FLOOR_SEEN_FT
-            name = "v10c" if seen else "v10e"
+            name = "v10k" if seen else "v10j"
         chosen[photo_stem] = name
         return (HERE / "prompts" / f"{name}.txt").read_text()
+
+    def stairs_for(photo_stem: str) -> str:
+        """Where the design's stairs fall in this photo ({stairs} in a template), from its solved camera."""
+        from . import camera
+        cams = json.loads((HERE / "out" / "camera" / "cameras.json").read_text())
+        cam = cams.get(photo_stem)
+        return camera.stairs_note(deck, cam, cam["placement"]) if cam and "placement" in cam else ""
 
     chosen: dict[str, str] = {}
     looks = json.loads((HERE / "styles.json").read_text())
@@ -109,7 +117,8 @@ def main() -> None:
                     return inputs.engine_image(name, style, photo.stem, data)
                 return (HERE / "refs" / style / f"{name}.png").read_bytes()
 
-            parts = build_parts(template_for(photo.stem), data, ref, deck_text, furniture, looks[style])
+            parts = build_parts(template_for(photo.stem), data, ref, deck_text, furniture, looks[style],
+                                stairs_for(photo.stem))
             for model in args.models:
                 for k in range(args.repeat):
                     jobs.append((photo.stem, style, model, parts, size, k))
