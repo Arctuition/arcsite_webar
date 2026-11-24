@@ -69,24 +69,43 @@ def _ft(v: float) -> str:
     return f"{v:.1f}".rstrip("0").rstrip(".")
 
 
-def _depth_profile(points: list[tuple[float, float]]) -> list[tuple[float, float, float]]:
-    """(x from, x to, depth) for each run along the wall, merged where the depth is the same."""
-    xs = sorted({round(p[0], 2) for p in points})
-    runs = []
+def _angle_to_wall(dx: float, dz: float) -> str:
+    """A direction in the frame as its real-world angle to the house wall, with where it heads."""
+    deg = math.degrees(math.atan2(abs(dz), abs(dx)))  # 0 = along the wall, 90 = straight out
+    side = "right" if dx > 0 else "left"
+    if deg > 85:
+        return "at 90 degrees to the house wall, straight " + ("out toward the yard" if dz > 0 else "toward the house")
+    if deg < 5:
+        return f"parallel to the house wall, toward the {side}"
+    out = "the yard" if dz > 0 else "the house"
+    return f"at {round(deg)} degrees to the house wall, toward {out} and to the {side}"
+
+
+def _depth_at(points: list[tuple[float, float]], x: float) -> float | None:
+    zs = []
     n = len(points)
+    for i in range(n):
+        (ax, az), (bx, bz) = points[i], points[(i + 1) % n]
+        if (ax - x) * (bx - x) < 0:
+            zs.append(az + (bz - az) * (x - ax) / (bx - ax))
+    return max(zs) - min(zs) if len(zs) >= 2 else None
+
+
+def _depth_profile(points: list[tuple[float, float]]) -> list[tuple[float, float, float, float]]:
+    """(x from, x to, depth at the start, depth at the end) for each run along the wall: the same at both
+    ends where the front is square to the wall, different where it slants. Runs of one depth are merged."""
+    xs = sorted({round(p[0], 2) for p in points})
+    runs: list[tuple[float, float, float, float]] = []
     for x0, x1 in zip(xs, xs[1:]):
-        mid = (x0 + x1) / 2
-        zs = []
-        for i in range(n):
-            (ax, az), (bx, bz) = points[i], points[(i + 1) % n]
-            if (ax - mid) * (bx - mid) < 0:
-                zs.append(az + (bz - az) * (mid - ax) / (bx - ax))
-        if len(zs) >= 2:
-            depth = max(zs) - min(zs)
-            if runs and abs(runs[-1][2] - depth) < 0.05:
-                runs[-1] = (runs[-1][0], x1, depth)
-            else:
-                runs.append((x0, x1, depth))
+        eps = min(0.01, (x1 - x0) / 4)
+        d0, d1 = _depth_at(points, x0 + eps), _depth_at(points, x1 - eps)
+        if d0 is None or d1 is None:
+            continue
+        flat = abs(d0 - d1) < 0.05
+        if runs and flat and abs(runs[-1][2] - runs[-1][3]) < 0.05 and abs(runs[-1][3] - d0) < 0.05:
+            runs[-1] = (runs[-1][0], x1, runs[-1][2], d1)
+        else:
+            runs.append((x0, x1, d0, d1))
     return runs
 
 
@@ -125,13 +144,20 @@ def describe(deck: dict, scale: bool = False) -> tuple[str, str]:
         return "left" if i == 0 else "right" if i == len(runs) - 1 else f"part {i + 1} from the left"
 
     if len(runs) > 1:
-        parts = [f"the {run_name(i)} part is {_ft(x1 - x0)} ft wide and sticks out {_ft(d)} ft"
-                 for i, (x0, x1, d) in enumerate(runs)]
-        deepest = max(d for _, _, d in runs)
-        steps = [f"the {run_name(i)} part is only about {round(100 * d / deepest)}% as deep as the deepest part"
-                 for i, (_, _, d) in enumerate(runs) if d < deepest * 0.95]
-        lines.append(f"- NOT a rectangle. Seen from the yard, {'; '.join(parts)}. So {', and '.join(steps)}: "
-                     "this step in the outline must be clearly visible in the result, as in the renders.")
+        parts = []
+        for i, (x0, x1, d0, d1) in enumerate(runs):
+            if abs(d0 - d1) < 0.05:
+                parts.append(f"the {run_name(i)} part is {_ft(x1 - x0)} ft wide and sticks out {_ft(d0)} ft")
+            else:
+                parts.append(f"over the {run_name(i)} {_ft(x1 - x0)} ft the front edge slants from {_ft(d0)} ft "
+                             f"out to {_ft(d1)} ft out (a cut corner, not a step)")
+        deepest = max(max(d0, d1) for *_, d0, d1 in runs)
+        steps = [f"the {run_name(i)} part is only about {round(100 * d0 / deepest)}% as deep as the deepest part"
+                 for i, (_, _, d0, d1) in enumerate(runs) if abs(d0 - d1) < 0.05 and d0 < deepest * 0.95]
+        line = f"- NOT a rectangle. Seen from the yard, {'; '.join(parts)}."
+        if steps:
+            line += f" So {', and '.join(steps)}: this step in the outline must be clearly visible in the result, as in the renders."
+        lines.append(line)
     else:
         lines.append("- A plain rectangle.")
 
@@ -146,12 +172,28 @@ def describe(deck: dict, scale: bool = False) -> tuple[str, str]:
                   else "to the right" if normal[0] > 0 else "to the left")
         where = ""
         if len(runs) > 1 and toward == "toward the yard":
-            for i, (x0, x1, _) in enumerate(runs):
+            for i, (x0, x1, *_) in enumerate(runs):
                 if x0 <= mid[0] <= x1:
                     where = (f" from the front edge of the {run_name(i)} part, near its middle"
                              " (not from the inner corner where the parts meet)")
-        lines.append(f"- One {_ft(s['width'])} ft wide stair with {s['risers']} steps goes down {toward}{where}; "
-                     f"its middle is {_ft(mid[0])} ft from the deck's left end.")
+        lines.append(f"- One {_ft(s['width'])} ft wide stair (about {round(100 * s['width'] / length)}% of the "
+                     f"{_ft(length)} ft edge it leaves from) with {s['risers']} steps goes down {toward}{where}; "
+                     f"its middle is {_ft(mid[0])} ft from the deck's left end. In the real world the stair runs "
+                     f"{_angle_to_wall(*normal)}.")
+
+    slanted = []
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        dx, dz = b[0] - a[0], b[1] - a[1]
+        deg = math.degrees(math.atan2(abs(dz), abs(dx)))
+        if 5 <= deg <= 85:
+            mx, mz = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+            slanted.append(f"the {_ft(math.dist(a, b))} ft edge {_where(mx - min(p[0] for p in pts), mz, width, depth)} "
+                           f"runs at {round(deg)} degrees to the house wall")
+    if slanted:
+        lines.append("- Angled edges: " + "; ".join(slanted) + ". Every other edge is parallel or at 90 degrees to the house wall.")
+    else:
+        lines.append("- Every edge of the deck is parallel or at 90 degrees to the house wall.")
 
     railed = {e for group in deck.get("railing", []) for e in group["edges"]}
     house = {_edge_no(e) for e in deck.get("ledger", []) + deck.get("house", [])}

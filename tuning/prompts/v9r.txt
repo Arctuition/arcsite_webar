@@ -1,0 +1,18 @@
+[IMAGE photo]
+Image 1 is a real photo of a house. Edit THIS photo: build the planned deck into it, as if it had really been built, and output the edited photo.
+
+[IMAGE render]
+Image 2 is a 3D render of the planned deck seen from exactly image 1's camera, at the same size: the grey background stands for the photo. Every part of the deck must appear in image 1 exactly where it is in image 2, at the same size, with the same outline, the same direction of every edge and of the stairs, the same railing and furniture. The deck's place and perspective were measured from the photo, so trace image 2's deck onto image 1; do not move, resize, turn or reshape it.
+
+Make the deck look really built, photorealistic:
+- Give it real materials in the style below instead of the render's flat look.
+- Add real light and shadow matching the photo, including the deck's shadow on the ground and its contact with the house wall.
+- Anything in the photo that stands in front of the deck (plants, a tree) stays in front of it.
+- Wherever the deck touches the house wall the boards run right up to the wall: no railing, posts or gap there. A door in that wall opens straight onto the deck.
+- If image 1 shows an older deck, patio, porch or its stairs, railing or posts, remove all of it and fill the space with lawn and garden matching the yard.
+
+Keep image 1's camera, framing and aspect ratio, and keep the house, its walls, doors, windows, roof and the rest of the yard as they are. Only the light, the lawn and the planting along the foot of the deck may change, as the style says.
+
+STYLE
+{look}
+Late-afternoon golden-hour light with soft dappled shadows, lush green lawn. Do not add people, text, logos or a pergola.

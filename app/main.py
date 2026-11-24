@@ -25,7 +25,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
-from . import photo
+from fastapi.middleware.cors import CORSMiddleware
+
+from . import deck_render, photo
 from .deck import FT, build_deck, make_layout
 from .gemini import GeminiError
 from .gltf import write_glb
@@ -47,6 +49,10 @@ MAX_DIAG_BYTES = 32 * 1024
 _diag_lock = threading.Lock()
 
 app = FastAPI(title="Deck Web AR PoC")
+# The canvas page (another localhost port) calls the deck rendering while it is being tuned.
+app.add_middleware(CORSMiddleware, allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+                   allow_methods=["POST", "OPTIONS"], allow_headers=["Content-Type"])
+app.include_router(deck_render.router)
 
 
 @app.middleware("http")

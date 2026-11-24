@@ -1,0 +1,30 @@
+[IMAGE photo]
+Image 1 is a real photo of a house. Edit THIS photo: build the planned deck described below onto the house, as if it had really been built, and output the edited photo.
+
+Keep image 1's camera exactly: the same viewpoint, height, lens, framing and aspect ratio. Do not zoom, crop, raise or move the camera, and do not switch to the viewpoint of images 2 to 5. Keep the same house with its walls, siding, doors, windows, roof and colours, and everything else in the yard. Only the light and the lawn may change, as the style below says.
+
+Where the deck goes: if the photo already shows a deck or patio against the house, remove it and build this deck in its place. Otherwise attach the deck to the wall of the house that faces the camera most directly, where a backyard deck would go. If that wall has garage doors, put the deck along the part of the wall without them, in front of the entry door or the windows, even if it then covers less of the wall; never in front of a garage door or on a driveway.
+
+[IMAGE matched]
+[IMAGE top]
+[IMAGE left-front]
+[IMAGE right-front]
+Images 2 to 5 are 3D renders of the planned deck only, not of this house: image 2 from about the photo's own camera angle, image 3 from straight above with the house side at the top, image 4 from the front left, image 5 from the front right. Image 2 shows how the deck's edges and stairs run when seen from a camera like image 1's: copy those directions, the stairs especially. In them only the deck, its railing, stairs and furniture are real; the wall, ground and sky are placeholders, never copy them. Use them for the deck's outline, proportions, stairs, railing and where each piece of furniture stands, then show that same deck from image 1's camera.
+
+SEEING THE DECK FROM THE PHOTO'S CAMERA
+The photo may show the house wall at an angle, not straight on. Before drawing, work out which wall the deck goes on and which way that wall runs in the photo. "Left" and "right" in the deck description are as seen standing in the yard facing that wall, so when the wall recedes to one side, the deck's left and right parts lie along the wall in that same receding direction. Keep every deck edge parallel or square to the wall and draw it with the photo's own perspective: edges along the wall converge with the wall's own lines, and edges out from the wall run toward the camera side. The deeper and the shallower parts keep the depths given below, measured straight out from the wall, whatever the camera angle. Rebuild the design's real geometry: every deck edge and every stair keeps the real-world angle to the house wall that the description and the renders give, parallel, 90 degrees, 45 degrees or whatever it is, and only then is drawn with the photo's perspective. In the photo, a line at 90 degrees to the wall runs parallel to the house's own lines that go straight out from that wall (the side wall's base, its roof edge, the corner's ground line), toward their vanishing point; a line parallel to the wall runs with the wall's own lines; a line at another angle lies between the two in that proportion. A line that is vertical in the plan does not point at the camera unless the camera faces the wall head on.
+
+THE DECK
+{deck}
+
+FURNITURE
+{furniture}
+
+RAILING
+Wherever the deck touches the house wall there is no railing, no posts and no gap: the boards run right up to the wall. Railing stands only on the open edges. Never put railing across a door; a door in the wall opens straight onto the deck.
+
+STYLE
+{look}
+Late-afternoon golden-hour light with soft dappled shadows, lush green lawn.
+
+Show the whole deck, its stairs (all of their steps) and the landing inside the frame. Photorealistic. Do not add people, text, logos or a pergola.

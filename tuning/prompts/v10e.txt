@@ -1,0 +1,19 @@
+[IMAGE composite-clean]
+THE CAMERA DOES NOT MOVE. The output is this same photo from this same camera: same viewpoint, height, angle, lens and framing, pixel for pixel outside the deck. Never raise, lower, turn or step back the camera to show the deck better, even when the deck is seen from below or runs out of the picture.
+
+Image 1 is a real photo of a house with a planned deck pasted into it as a flat 3D render. The deck's place, size, outline, the direction of every edge and of the stairs, the railing and the furniture were measured from this photo's own camera and are exactly right. Keep all of that exactly as it is in image 1: do not move, resize, turn, reshape or redraw the deck, and do not change its stairs' direction. The deck has only the stairs shown in image 1; add no other stairs or steps.
+
+[IMAGE clean]
+Image 2 is the same photo before the deck was pasted in.
+
+Make the deck look really built, photorealistic:
+- Give it real materials in the style below instead of the render's flat look, with real wood grain, joints and fasteners.
+- Add real light and shadow matching the photo: shadows under the railing and furniture, the deck's shadow on the ground, and its contact with the house wall.
+- Anything in the photo that stands in front of the deck (plants, a tree) stays in front of it.
+- Wherever the deck touches the house wall the boards run right up to the wall: no railing, posts or gap there. A door in that wall opens straight onto the deck.
+
+Keep the photo's camera, framing and aspect ratio, and keep the house, its walls, doors, windows, roof, the trees and the rest of the yard as they are; add no trees or buildings. Only the light, the lawn and the planting along the foot of the deck may change, as the style says.
+
+STYLE
+{look}
+Late-afternoon golden-hour light with soft dappled shadows, lush green lawn. Do not add people, text, logos or a pergola.
