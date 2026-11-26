@@ -51,6 +51,14 @@ def _open(request: urllib.request.Request) -> dict:
 
 
 def gemini(model: str, parts: list[Part], photo_size: tuple[int, int]) -> tuple[bytes, str | None]:
+    image, text, reason = gemini_answer(model, parts, photo_size)
+    if image:
+        return image, text
+    raise ProviderError(f"no image ({reason}): {text}"[:400])
+
+
+def gemini_answer(model: str, parts: list[Part], photo_size: tuple[int, int]) -> tuple[bytes | None, str | None, str]:
+    """The image (or None: some prompts let the model answer in words only), all the text, and the finish reason."""
     target = photo_size[0] / photo_size[1]
     ratio = min(GEMINI_RATIOS, key=lambda r: abs(int(r.split(":")[0]) / int(r.split(":")[1]) - target))
     body = {
@@ -66,16 +74,18 @@ def gemini(model: str, parts: list[Part], photo_size: tuple[int, int]) -> tuple[
         headers={"Content-Type": "application/json", "x-goog-api-key": _key("GEMINI_API_KEY")},
     )
     payload = _open(request)
-    text = None
+    texts, image = [], None  # all the answer's text, before or after the image (a detect-and-edit call reads it)
     for part in ((payload.get("candidates") or [{}])[0].get("content") or {}).get("parts", []):
         if part.get("thought"):
             continue
         inline = part.get("inlineData") or part.get("inline_data")
         if inline and inline.get("data"):
-            return base64.b64decode(inline["data"]), text
-        text = part.get("text") or text
+            image = image or base64.b64decode(inline["data"])
+        elif part.get("text"):
+            texts.append(part["text"])
+    text = "\n".join(texts) or None
     reason = (payload.get("candidates") or [{}])[0].get("finishReason")
-    raise ProviderError(f"no image ({reason}): {text or json.dumps(payload.get('promptFeedback'))}"[:400])
+    return image, text or (None if image else json.dumps(payload.get("promptFeedback"))), str(reason)
 
 
 def _openai_size(photo_size: tuple[int, int]) -> str:

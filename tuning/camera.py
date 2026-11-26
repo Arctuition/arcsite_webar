@@ -446,8 +446,62 @@ def place(deck: dict, cam: dict, wall: dict | None = None) -> dict:
             left, how = from_left, "design distance from the left corner"
         elif cam.get("right_end") == "corner":
             left, how = photo_len - width - from_right, "design distance from the right corner"
-    left = max(0.0, min(left, max(0.0, photo_len - width)))
-    return {"x_ft": left, "width_ft": width, "how": how}
+    if width <= photo_len:
+        return {"x_ft": max(0.0, min(left, photo_len - width)), "width_ft": width, "how": how}
+    # Wider than the photo's wall (a 20 ft deck on the 11 ft entry wall of a house front): the deck runs past the
+    # wall's ends rather than being refused (the user, 11-25), flush with one end or centred, whichever shows most of it.
+    spots = {"wider than the wall: flush with its left end": 0.0,
+             "wider than the wall: centred on it": (photo_len - width) / 2,
+             "wider than the wall: flush with its right end": photo_len - width}
+    if "rotation" not in cam:
+        return {"x_ft": spots["wider than the wall: centred on it"], "width_ft": width,
+                "how": "wider than the wall: centred on it"}
+    shown = {k: in_frame(deck, cam, {"x_ft": x, "width_ft": width})
+             for k, x in spots.items()}
+    best = max(spots, key=lambda k: (round(shown[k], 2), k.endswith("centred on it")))
+    return {"x_ft": spots[best], "width_ft": width, "how": best}
+
+
+def in_frame(deck: dict, cam: dict, placement: dict) -> float:
+    """The share of the deck's floor that falls inside the picture."""
+    import cv2
+
+    outline, _ = deck_points(deck, placement)
+    poly = np.array([(x, z) for x, _, z in outline], np.float32)
+    x0, z0 = poly.min(axis=0)
+    x1, z1 = poly.max(axis=0)
+    floor_y = deck["height_in"] / 12
+    pts = [(x, floor_y, z) for x in np.linspace(x0, x1, 40) for z in np.linspace(z0, z1, 40)
+           if cv2.pointPolygonTest(poly.reshape(-1, 1, 2), (float(x), float(z)), False) >= 0]
+    if not pts:
+        return 0.0
+    px = project(cam, pts)
+    w, h = cam["size"]
+    ok = ~np.isnan(px).any(axis=1)
+    return float((ok & (px[:, 0] >= 0) & (px[:, 0] < w) & (px[:, 1] >= 0) & (px[:, 1] < h)).mean())
+
+
+MIN_IN_FRAME = 0.5  # of the deck's floor; less, and the picture shows a corner of it rather than the deck
+MIN_SPAN = 0.15  # of the picture's width the deck must take: solved cameras span 0.33-0.87; a broken one (the camera
+#                  58,000 ft away, the wall 1514 ft long: front photo, live 11-25) shrinks the deck to a dot
+
+
+def fit_problems(deck: dict, cam: dict, placement: dict) -> list[str]:
+    """Why this photo cannot show this deck (empty when it can): most of its floor would fall out of the picture, or
+    it would shrink to a dot (a broken camera). A deck wider than its wall is let run past the wall's ends (place)."""
+    problems = []
+    outline, _ = deck_points(deck, placement)
+    span_px = project(cam, list(outline) + [(x, 0.0, z) for x, _, z in outline])
+    if not np.isnan(span_px).any():
+        w = cam["size"][0]
+        span = float(np.ptp(np.clip(span_px[:, 0], 0, w))) / w
+        if span < MIN_SPAN:
+            problems.append(f"the deck would take only {span:.0%} of the picture's width (the camera is likely wrong: "
+                            f"the wall came out {cam['wall_length_ft']:.0f} ft long)")
+    share = in_frame(deck, cam, placement)
+    if share < MIN_IN_FRAME:
+        problems.append(f"only {share:.0%} of the deck is in the picture")
+    return problems
 
 
 def deck_points(deck: dict, placement: dict):

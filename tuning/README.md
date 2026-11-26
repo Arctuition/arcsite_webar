@@ -43,3 +43,27 @@
 3. `POST /api/deck/compose` `{job, deck_png, ground_png, style, model?, prompt?, retry?}`：去掉埋在地下的部分（`inputs.above_ground`），贴到干净照片上，按 `prompt`（默认 `auto`：看得见 deck 地板用 v10k，否则 v10j；两者分别是 v10c、v10e 加上 `camera.stairs_note` 算出的楼梯位置：楼梯伸出画面时说明它从哪边出画、别处不加楼梯，楼梯都在画面里时与 v10c、v10e 一字不差）让 Gemini 3.1 Flash 出图，按 `check` 打分，最多重试 `retry` 次（默认 2）。返回图、每次的分数、`passed`、`cleaned`。job 30 分钟过期（404）。
 
 每次请求的输入输出存在 `out/live/<时间>-two-step/`（photo、clean、deck/ground 渲染、composite、result、`wall.json`、`meta.json`）。
+
+## 先去 deck、只润色 deck（p2，默认，2026-11-25）
+
+同样两个接口、同样的两张画布截图，服务端流程换成 `pipeline2.py` 的做法（环境变量 `DECK_FLOW=two-step` 换回上面的旧流程）：
+
+1. **检测 + 去 deck 一次调用**（`pipeline2.detect_clean`，Gemini 3.1 Flash Image）：模型先答 DECK / NONE，有就同时出去掉它的图，没有就沿用原图。3 张照片 × 3 次判断全对。
+2. **墙和相机**：原图上标墙和检测并行；有旧 deck 时去 deck 图上也标一次，取线条残差（`fit_cost`）最小、又放得下 deck 的解。`camera.fit_problems` 拦两种：deck 大半出画；deck 在画面里不到 15% 宽（相机解坏了，如墙长 1514 ft）。拦下的换一次标墙重来，仍不行 422。deck 比墙宽时不拦，`camera.place` 让它越过墙端（靠左、居中、靠右里画面露出最多的那个）。
+3. **本地合成**（`pipeline2.compose_images`）：截图切掉地下部分，贴到干净照片上，用带地面那张估出 deck 的阴影压暗照片（`shadow_from_ground`），deck 颜色向照片靠一半。
+4. **只润色 deck**（`prompts/p2l2.txt`）：模型只改 deck、栏杆、楼梯、家具和它们的阴影，不准加花草、不画地下的墩子。答回的图先对齐到合成图（`register`，前景照片 Gemini 会缩放 3–36%），再只把 deck 和阴影一带贴回干净照片（`paste_back`），其余像素是原照片。没截到 deck 时 `/compose` 直接 422。
+
+画布截图隐藏房子、地面和立柱基础（基础在地下，顶面与地面齐平切不掉，会被画成混凝土墩）。
+
+盲评（3 位评委，每组 6 张，满分 12/14）：只润色 deck 再贴回 8.8 vs 整张润色 7.1 vs 旧流程 6.0；加对齐和禁止加花后 9.2；去掉墩子后 18 张没有一张露出地下部分（之前 18 张全有），总分 10.0 → 11.3。还没解决：模型仍会在 deck 下加花（约一半），火盆常被换成沙发或花盆。
+
+实验命令：
+
+```sh
+.venv/bin/python -m tuning.pipeline2 detect               # 1：检测 + 去 deck，out/p2/detect/
+.venv/bin/python -m tuning.pipeline2 wall --repeat 3      # 2：原图和去 deck 图各解几次相机，out/p2/wall/
+.venv/bin/python -m tuning.pipeline2 compose              # 3：用 engine/p2/ 的截图合成，out/p2/compose/
+.venv/bin/python -m tuning.pipeline2 polish --variants l2 --name d3   # 4：每张照片出 6 次，out/p2/polish/d3/
+```
+
+`engine/p2/<照片>.{deck,ground,bare}.png` 是引擎按 `out/p2/cameras.json` 选出的相机截的图（deck：隐藏房子、地面、基础；ground：隐藏房子、基础；bare：只留地面）。每次请求的记录在 `out/live/<时间>-p2/`（多一张 `polished.jpg`：贴回前模型的原图）。

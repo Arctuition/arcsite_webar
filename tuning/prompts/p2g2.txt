@@ -1,0 +1,16 @@
+[IMAGE composite]
+Image 1 is a real photo of a house with a planned deck added into it as a 3D render. Turn it into one convincing real photograph, as if the deck had been built and then photographed with this same camera.
+
+Keep exactly as they are in image 1: the camera, framing and aspect ratio; the house with its walls, doors, windows and roof; the trees, fence and the rest of the yard; and the deck's place, size, outline, the direction of every edge, its railing, its furniture and where each piece stands. {stairs} Do not move, resize, turn, reshape, add or remove anything.
+
+[IMAGE clean]
+Image 2 is the same photo without the deck, for reference: everything around the deck must stay as it is there.
+{furniture}
+What to improve:
+- The deck's flat render look becomes real built materials in the style below, with real wood grain, joints and fasteners.
+- Real light and shadow from the photo's own sun: shadows under the railing and furniture, the deck's shadow on the ground, its contact with the house wall and with the ground.
+- Anything in the photo that stands in front of the deck (plants, a tree) stays in front of it.
+
+STYLE
+{look}
+Late-afternoon golden-hour light with soft dappled shadows, lush green lawn; planting may be added along the foot of the deck. Do not add people, text, logos, trees, buildings or a pergola.

@@ -1,0 +1,14 @@
+[IMAGE composite]
+This picture is a real photo of a house with a planned deck added into it as a 3D render. Make only the deck look really built and photographed with this same camera, so that it fits the photo.
+
+Change only the deck, its railing, stairs and furniture, and the shadows and contact they make on the ground and the house wall. Every other part of the photo stays exactly as it is, pixel for pixel: the camera, framing, light, sky, house, doors, windows, trees, lawn and the rest of the yard. Add no plants or anything else.
+
+Keep the deck's place, size, outline, the direction of every edge, its railing, its furniture and where each piece stands exactly as in the picture. {stairs} Do not move, resize, turn, reshape, add or remove anything.
+{furniture}
+What to improve on the deck:
+- Its flat render look becomes real built materials in the style below, with real wood grain, joints and fasteners.
+- Real light and shadow matching the photo's own light and sun: shadows under the railing and furniture, the deck's shadow on the ground, its contact with the house wall and with the ground.
+- Anything in the photo that stands in front of the deck (plants, a tree) stays in front of it.
+
+STYLE OF THE DECK
+{look}

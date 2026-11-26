@@ -10,6 +10,14 @@ Two steps -- the engine draws the deck from the photo's own camera:
   POST /api/deck/compose  the job and the engine's two transparent renders (the deck alone, and with the ground): the
                           deck pasted on the clean photo and made real by Gemini, retried while tuning.check says the
                           photo or the deck was redrawn.
+
+The p2 flow (DECK_FLOW, default; tuning/pipeline2.py), on the same two routes and the same canvas renders:
+  /wall     one image-model call says whether the photo has a deck and removes it, while the wall is marked on the
+            photo; with a deck, the wall is marked on the cleaned photo too, and the camera that fits best (lowest
+            line cost) and can hold the deck (camera.fit_problems) is kept.
+  /compose  the deck render pasted on the clean photo with its shadow and the photo's colour; the model polishes only the
+            deck (p2l2), its answer is moved back onto the composite's pixels and pasted on the clean photo around the
+            deck and its shadow, the rest of the photo kept as it was.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import secrets
 import threading
@@ -35,7 +44,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from app import gemini
-from tuning import camera, check, inputs, providers
+from tuning import camera, check, inputs, pipeline2, providers
 from tuning.describe import _edge_no, describe
 from tuning.run import FLOOR_SEEN_FT, HERE as TUNING_DIR, build_parts, prompt_text
 
@@ -127,6 +136,8 @@ async def render(req: RenderRequest) -> dict:
 CLEAN_MODEL = "gemini-3.1-flash-image"
 COMPOSE_MODEL = "gemini-3.1-flash-image"
 WALL_TRIES = 2
+FLOW = os.environ.get("DECK_FLOW", "p2")  # "p2", or "two-step": the flow before 11-25 (v10j/v10k on the composite)
+P2_PROMPT = "p2l2"
 JOB_TTL_S = 30 * 60
 PROMPT_NAME = re.compile(r"[\w-]+")
 
@@ -149,6 +160,7 @@ class Job:
     out: Path
     composes: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    flow: str = "two-step"
 
 
 def _sweep() -> None:
@@ -205,7 +217,14 @@ def _solve(marks: dict, jpeg: bytes, size: tuple[int, int], deck: dict) -> tuple
     if not _finite(engine["eye"] + engine["target"] + engine["up"] + [engine["fovDeg"]]):
         raise ValueError("the solved camera is degenerate (not finite)")
     placement = {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in placement.items()}
+    problems = camera.fit_problems(deck, cam, placement)
+    if problems:  # a deck mostly out of the picture, or shrunk to a dot by a broken camera, looks wrong however drawn
+        raise PhotoDoesNotFit("this photo cannot show this deck: " + "; ".join(problems))
     return cam, placement, engine
+
+
+class PhotoDoesNotFit(ValueError):
+    """The camera is fine but the deck cannot stand where this photo puts it: ask for another photo."""
 
 
 def _write(out: Path, files: dict[str, bytes | str | dict]) -> None:
@@ -236,6 +255,9 @@ async def deck_wall(req: WallRequest) -> dict:
     except (KeyError, ValueError, TypeError, IndexError) as err:
         raise HTTPException(400, f"deck: {err}") from err
 
+    if FLOW == "p2":
+        return await _wall_p2(req, photo, size, t0)
+
     # The model's marks differ from call to call, and now and then give no camera (one in two angled tries, 11-24):
     # asked once more before the photo is given up on.
     for attempt in range(WALL_TRIES):
@@ -248,7 +270,7 @@ async def deck_wall(req: WallRequest) -> dict:
         try:
             cam, placement, engine = await run_in_threadpool(_solve, marks, photo, size, req.deck)
             break
-        except ValueError as err:
+        except ValueError as err:  # PhotoDoesNotFit too: another answer may mark a longer wall
             log.warning("deck wall: try %d of %d gave no camera: %s", attempt + 1, WALL_TRIES, err)
             if attempt + 1 == WALL_TRIES:
                 raise HTTPException(422, str(err)) from err
@@ -268,6 +290,77 @@ async def deck_wall(req: WallRequest) -> dict:
         "job": key, "size": size, "marks": marks, "solved": solved, "wall": wall, "camera": engine,
         "seconds": seconds}})
     log.info("deck wall %s: %s, %.1f s", key, wall["label"], seconds)
+    return {"job": key, "width": size[0], "height": size[1], "camera": engine, "wall": wall, "seconds": seconds}
+
+
+def _p2_cameras(photo: bytes, size: tuple[int, int], deck: dict) -> dict:
+    """Steps 1-3 of the p2 flow: {verdict, clean (None without a deck), src, marks, cam, placement, engine}, raising
+    HTTPException when no source gives a camera that can hold the deck."""
+    def solve(jpeg: bytes):
+        marks = camera.mark_wall(jpeg)
+        if not isinstance(marks, dict):
+            raise ValueError("the wall analysis answer is not a JSON object")
+        return (marks, *_solve(marks, jpeg, size, deck))
+
+    detect = _cleaner.submit(pipeline2.detect_clean, photo)
+    sources = {"original": photo}
+    futures = {"original": _cleaner.submit(solve, photo)}
+    try:
+        det = detect.result()
+    except Exception as err:  # noqa: BLE001 -- the photo is then taken as it is, as with NONE
+        log.warning("deck wall p2: deck detection failed, using the photo as it is: %s", err)
+        det = {"verdict": None, "text": str(err)[:200]}
+    clean = det["image"] if det["verdict"] == "DECK" else None
+    if clean is not None:
+        sources["cleaned"] = clean
+        futures["cleaned"] = _cleaner.submit(solve, clean)
+
+    errors, unfit, found = [], [], {}
+    for attempt in range(WALL_TRIES):  # the marks differ from call to call; a source that failed is asked once more
+        for src, fut in futures.items():
+            try:
+                found[src] = fut.result()
+            except PhotoDoesNotFit as err:
+                unfit.append(str(err))
+            except (ValueError, gemini.GeminiError) as err:
+                errors.append(f"{src}: {err}")
+        if found or attempt + 1 == WALL_TRIES:
+            break
+        log.warning("deck wall p2: try %d of %d gave no camera: %s", attempt + 1, WALL_TRIES, errors + unfit)
+        futures = {src: _cleaner.submit(solve, jpeg) for src, jpeg in sources.items()}
+    if not found:
+        raise HTTPException(422, unfit[-1] if unfit else "; ".join(errors[-2:]))
+    src = min(found, key=lambda k: float(found[k][1]["fit_cost"]))
+    marks, cam, placement, engine = found[src]
+    return {"verdict": det["verdict"], "detect_text": det.get("text"), "clean": clean, "src": src, "marks": marks,
+            "cam": cam, "placement": placement, "engine": engine,
+            "fit_costs": {k: round(float(v[1]["fit_cost"]), 5) for k, v in found.items()}}
+
+
+async def _wall_p2(req: "WallRequest", photo: bytes, size: tuple[int, int], t0: float) -> dict:
+    r = await run_in_threadpool(_p2_cameras, photo, size, req.deck)
+    clean = None
+    if r["clean"] is not None:
+        clean = cf.Future()
+        clean.set_result(r["clean"])
+    key = secrets.token_urlsafe(12)
+    out = TUNING_DIR / "out" / "live" / f"{dt.datetime.now():%m%d-%H%M%S}-p2"
+    cam, placement, engine = r["cam"], r["placement"], r["engine"]
+    wall = {"label": r["marks"].get("label"), "hfov_deg": float(cam["hfov_deg"]),
+            "camera_height_ft": float(cam["camera_height_ft"]), "wall_length_ft": float(cam["wall_length_ft"]),
+            "placement": placement, "existing_deck": r["clean"] is not None, "solved_on": r["src"]}
+    with _jobs_lock:
+        _jobs[key] = Job(time.time(), photo, size, req.deck, r["marks"], cam, placement, engine, clean, out, flow="p2")
+    seconds = round(time.time() - t0, 1)
+    solved = {k: v for k, v in cam.items() if k not in ("snapped_lines",)}
+    files = {"photo.jpg": photo, "deck.json": req.deck, "wall.json": {
+        "job": key, "flow": "p2", "size": size, "detect": {"verdict": r["verdict"], "text": r["detect_text"]},
+        "fit_costs": r["fit_costs"], "marks": r["marks"], "solved": solved, "wall": wall, "camera": engine,
+        "seconds": seconds}}
+    if r["clean"] is not None:
+        files["clean.jpg"] = r["clean"]
+    await run_in_threadpool(_write, out, files)
+    log.info("deck wall p2 %s: %s on the %s photo (deck: %s), %.1f s", key, wall["label"], r["src"], r["verdict"], seconds)
     return {"job": key, "width": size[0], "height": size[1], "camera": engine, "wall": wall, "seconds": seconds}
 
 
@@ -303,7 +396,8 @@ def _png(im: Image.Image) -> bytes:
     return out.getvalue()
 
 
-def _attempts(model: str, parts: list, size: tuple[int, int], composite: bytes, alpha: Image.Image, retry: int):
+def _attempts(model: str, parts: list, size: tuple[int, int], composite: bytes, alpha: Image.Image, retry: int,
+              fix=None):
     """Up to 1 + retry edits; stop at the first that keeps the photo and the deck, else keep the best by check.rank.
     A provider failure after a scored result keeps that result; before one, it is raised."""
     scores, best = [], None
@@ -315,6 +409,8 @@ def _attempts(model: str, parts: list, size: tuple[int, int], composite: bytes, 
                 raise
             log.warning("deck compose: a retry failed, keeping the best so far", exc_info=True)
             break
+        if fix is not None:  # p2: the answer moved back onto the composite's pixels before it is scored
+            image = fix(image)
         sc = {"photo": round(check.drift(image, composite, alpha), 2), "deck": round(check.deck(image, composite, alpha), 2)}
         scores.append(sc)
         if best is None or check.rank(sc) > best[0]:
@@ -336,6 +432,8 @@ async def deck_compose(req: ComposeRequest) -> dict:
     if job is None:
         raise HTTPException(404, "unknown or expired job; send the photo to /api/deck/wall again")
     prompt_name = req.prompt or "auto"
+    if prompt_name == "auto" and job.flow == "p2":
+        prompt_name = P2_PROMPT
     if prompt_name == "auto":
         seen = job.cam["camera_height_ft"] > float(job.deck["height_in"]) / 12 + FLOOR_SEEN_FT
         prompt_name = "v10k" if seen else "v10j"
@@ -349,6 +447,8 @@ async def deck_compose(req: ComposeRequest) -> dict:
         return inputs.above_ground(_render_png("deck_png", deck_raw, job.size), _render_png("ground_png", ground_raw, job.size))
 
     deck_im = await run_in_threadpool(above)
+    if deck_im.getchannel("A").getbbox() is None:  # nothing to polish: the model would only be asked to keep the photo
+        raise HTTPException(422, "the 3D view drew no deck from this camera; send the photo to /api/deck/wall again")
     t_clean = time.time()
     if job.clean is None:
         clean = job.photo
@@ -358,7 +458,13 @@ async def deck_compose(req: ComposeRequest) -> dict:
         except Exception as err:  # providers.ProviderError, or an answer that is not an image
             raise HTTPException(502, f"removing the existing deck: {err}") from err
     clean_wait = round(time.time() - t_clean, 1)
-    composite = await run_in_threadpool(_composite, clean, deck_im)
+    p2 = None
+    if job.flow == "p2":
+        ground_im = await run_in_threadpool(_render_png, "ground_png", ground_raw, job.size)
+        p2 = await run_in_threadpool(pipeline2.compose_images, clean, deck_im, ground_im)
+        composite = p2["rich"]
+    else:
+        composite = await run_in_threadpool(_composite, clean, deck_im)
     alpha = deck_im.getchannel("A")
 
     deck_text, furniture = describe(job.deck)
@@ -367,16 +473,26 @@ async def deck_compose(req: ComposeRequest) -> dict:
     except Exception:  # noqa: BLE001 -- an odd stairs entry must not cost the rendering
         log.warning("deck compose: no stairs note", exc_info=True)
         stairs = camera.IN_VIEW_STAIRS
+    template = template_path.read_text()
+    if "{furniture}" in template and not prompt_name.startswith("v10"):  # the p2 prompts list it only when seen
+        seen = job.cam["camera_height_ft"] > float(job.deck["height_in"]) / 12 + FLOOR_SEEN_FT
+        template = template.replace("{furniture}", pipeline2.furniture_block(furniture) if seen else "")
     try:
-        parts = build_parts(template_path.read_text(), clean, {"composite-clean": composite, "clean": clean},
+        parts = build_parts(template, clean, {"composite": composite, "composite-clean": composite, "clean": clean},
                             deck_text, furniture, looks[req.style], stairs)
     except KeyError as err:
         raise HTTPException(400, f"prompt {prompt_name} needs an image this flow does not have: {err}") from err
 
     try:
-        image, scores, attempts = await run_in_threadpool(_attempts, model, parts, job.size, composite, alpha, req.retry)
+        fix = (lambda im: pipeline2.register(im, composite, alpha)[0]) if p2 else None
+        image, scores, attempts = await run_in_threadpool(_attempts, model, parts, job.size, composite, alpha, req.retry,
+                                                          fix)
     except providers.ProviderError as err:
         raise HTTPException(502, str(err)) from err
+    polished = None
+    if p2:  # only the deck and its shadow come from the answer; the rest of the photo stays the photo
+        polished = image
+        image = await run_in_threadpool(pipeline2.paste_back, image, clean, alpha, p2["shadow"], 25, 8.0, True)
     jpeg = await run_in_threadpool(providers.as_jpeg, image)
     width, height = Image.open(io.BytesIO(jpeg)).size
     passed = check.passes(scores)
@@ -388,12 +504,15 @@ async def deck_compose(req: ComposeRequest) -> dict:
         out = job.out if job.composes == 1 else job.out / f"compose-{job.composes}"
     files = {"deck.png": deck_raw, "ground.png": ground_raw, "deck-above-ground.png": await run_in_threadpool(_png, deck_im),
              "composite.jpg": composite, "result.jpg": jpeg, "meta.json": {
-                 "job": req.job, "style": req.style, "model": model, "prompt_version": prompt_name, "retry": req.retry,
+                 "job": req.job, "flow": job.flow, "style": req.style, "model": model, "prompt_version": prompt_name,
+                 "retry": req.retry,
                  "camera": job.engine, "camera_height_ft": job.cam["camera_height_ft"], "placement": job.placement,
                  "attempts": attempts, "kept": scores, "passed": passed, "cleaned": job.clean is not None,
                  "seconds": seconds, "clean_wait_s": clean_wait, "prompt": text}}
     if job.clean is not None:
         files["clean.jpg"] = clean
+    if polished is not None:
+        files["polished.jpg"] = await run_in_threadpool(providers.as_jpeg, polished)
     await run_in_threadpool(_write, out, files)
     log.info("deck compose %s: %s %s %s, %s, %.1f s", req.job, req.style, model, prompt_name, attempts, seconds)
     return {
