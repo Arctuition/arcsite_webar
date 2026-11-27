@@ -442,6 +442,18 @@ def place(deck: dict, cam: dict, wall: dict | None = None) -> dict:
     if wall:
         ends = sorted(f._x(p) - f.x0 for p in (wall["a"], wall["b"]))
         from_left, from_right = -ends[0], ends[1] - width  # design gaps between the deck and each wall end
+        # A deck that runs on past an end of its house wall goes round the house's corner there (or past the
+        # house): it is lined up with that corner in the photo whatever the photo's wall length, and what lies past
+        # the corner is beside the house, out of the picture or behind it -- the photo is the truth (the user, 11-27:
+        # a deck round the right corner of a 24 ft wall, put on a 22 ft wall, had been pushed onto the wall whole,
+        # its wing standing inside the house).
+        past = [(gap, side) for gap, side in ((from_left, "left"), (from_right, "right"))
+                if gap < -PAST_CORNER_FT and cam.get(f"{side}_end") == "corner"]
+        if past:
+            gap, side = min(past)
+            left = from_left if side == "left" else photo_len - width - from_right
+            return {"x_ft": left, "width_ft": width, "how": f"past the house's {side} corner, as designed",
+                    "past_corner": side}
         if cam.get("left_end") == "corner":
             left, how = from_left, "design distance from the left corner"
         elif cam.get("right_end") == "corner":
@@ -482,13 +494,17 @@ def in_frame(deck: dict, cam: dict, placement: dict) -> float:
 
 
 MIN_IN_FRAME = 0.5  # of the deck's floor; less, and the picture shows a corner of it rather than the deck
+MIN_IN_FRAME_PAST_CORNER = 0.2  # a deck lined up with a corner it runs past: the photo decides how much of it shows
+PAST_CORNER_FT = 1.0  # how far a deck must run past its house wall's end to count as going past the corner (the
+#                       engine's wall runs stop ~0.4 ft short of a deck flush with the house's corner)
 MIN_SPAN = 0.15  # of the picture's width the deck must take: solved cameras span 0.33-0.87; a broken one (the camera
 #                  58,000 ft away, the wall 1514 ft long: front photo, live 11-25) shrinks the deck to a dot
 
 
 def fit_problems(deck: dict, cam: dict, placement: dict) -> list[str]:
     """Why this photo cannot show this deck (empty when it can): most of its floor would fall out of the picture, or
-    it would shrink to a dot (a broken camera). A deck wider than its wall is let run past the wall's ends (place)."""
+    it would shrink to a dot (a broken camera). A deck wider than its wall is let run past the wall's ends (place); one
+    lined up with a house corner it runs past may show less of itself, the rest being past the corner."""
     problems = []
     outline, _ = deck_points(deck, placement)
     span_px = project(cam, list(outline) + [(x, 0.0, z) for x, _, z in outline])
@@ -499,7 +515,7 @@ def fit_problems(deck: dict, cam: dict, placement: dict) -> list[str]:
             problems.append(f"the deck would take only {span:.0%} of the picture's width (the camera is likely wrong: "
                             f"the wall came out {cam['wall_length_ft']:.0f} ft long)")
     share = in_frame(deck, cam, placement)
-    if share < MIN_IN_FRAME:
+    if share < (MIN_IN_FRAME_PAST_CORNER if placement.get("past_corner") else MIN_IN_FRAME):
         problems.append(f"only {share:.0%} of the deck is in the picture")
     return problems
 

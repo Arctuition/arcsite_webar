@@ -49,7 +49,7 @@
 同样两个接口、同样的两张画布截图，服务端流程换成 `pipeline2.py` 的做法（环境变量 `DECK_FLOW=two-step` 换回上面的旧流程）：
 
 1. **检测 + 去 deck 一次调用**（`pipeline2.detect_clean`，Gemini 3.1 Flash Image）：模型先答 DECK / NONE，有就同时出去掉它的图，没有就沿用原图。3 张照片 × 3 次判断全对。模型偶尔答 DECK 却不回图（今天的本地记录 15 次里有 2 次），这时再问一次；还没图，或检测本身失败而标墙说照片里有旧 deck（`existing_deck`），就改用 `inputs.clean_photo` 去掉它；也失败就 502，不再带着旧 deck 往下走（那样新 deck 会叠在旧 deck 上，贴回时旧 deck 露在四周）。`wall.json` 的 `detect` 记着问了几次（`tries`）和是谁去掉的（`cleaned_by`）。
-2. **墙和相机**：原图上标墙和检测并行；有旧 deck 时去 deck 图上也标一次，取线条残差（`fit_cost`）最小、又放得下 deck 的解。`camera.fit_problems` 拦两种：deck 大半出画；deck 在画面里不到 15% 宽（相机解坏了，如墙长 1514 ft）。拦下的换一次标墙重来，仍不行 422。deck 比墙宽时不拦，`camera.place` 让它越过墙端（靠左、居中、靠右里画面露出最多的那个）。
+2. **墙和相机**：原图上标墙和检测并行；有旧 deck 时去 deck 图上也标一次，取线条残差（`fit_cost`）最小、又放得下 deck 的解。`camera.fit_problems` 拦两种：deck 大半出画；deck 在画面里不到 15% 宽（相机解坏了，如墙长 1514 ft）。拦下的换一次标墙重来，仍不行 422。deck 比墙宽时不拦，`camera.place` 让它越过墙端（靠左、居中、靠右里画面露出最多的那个）。图纸里 deck 越过它所贴那面墙的端点（绕过房子转角，或伸出房子）超过 1 ft、照片里同一端又是墙角时，以照片为准、对齐这个墙角，不再硬塞进墙里（否则绕过转角的那段会插进房子）；越过墙角的部分在画面外或房子侧面，这时只要 20% 的地板在画面里就放行。
 3. **本地合成**（`pipeline2.compose_images`）：截图切掉地下部分，贴到干净照片上，用带地面那张估出 deck 的阴影压暗照片（`shadow_from_ground`），deck 颜色向照片靠一半。
 4. **只润色 deck**（`prompts/p2l2.txt`）：模型只改 deck、栏杆、楼梯、家具和它们的阴影，不准加花草、不画地下的墩子。答回的图先对齐到合成图（`register`，前景照片 Gemini 会缩放 3–36%），再只把 deck 和阴影一带贴回干净照片（`paste_back`），其余像素是原照片。没截到 deck 时 `/compose` 直接 422。
 
