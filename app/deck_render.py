@@ -285,7 +285,10 @@ def _p2_cameras(photo: bytes, size: tuple[int, int], deck: dict) -> dict:
         raise HTTPException(422, unfit[-1] if unfit else "; ".join(errors[-2:]))
     src = min(found, key=lambda k: float(found[k][1]["fit_cost"]))
     marks, cam, placement, engine = found[src]
-    return {"verdict": det["verdict"], "detect_text": det.get("text"), "detect_tries": det.get("tries"),
+    old_box = None  # where the photo's old deck is, by the marks on the original photo (the cleaned one has none)
+    if "original" in found:
+        old_box = (found["original"][0].get("existing_deck") or {}).get("box")
+    return {"verdict": det["verdict"], "detect_text": det.get("text"), "detect_tries": det.get("tries"), "old_box": old_box,
             "cleaned_by": det.get("cleaned_by", "detect_clean" if clean is not None else None),
             "clean": clean, "src": src, "marks": marks,
             "cam": cam, "placement": placement, "engine": engine,
@@ -294,10 +297,11 @@ def _p2_cameras(photo: bytes, size: tuple[int, int], deck: dict) -> dict:
 
 async def _wall_p2(req: "WallRequest", photo: bytes, size: tuple[int, int], t0: float) -> dict:
     r = await run_in_threadpool(_p2_cameras, photo, size, req.deck)
-    clean = None
-    if r["clean"] is not None:
+    clean, base, restored = None, None, None
+    if r["clean"] is not None:  # the photo itself, with the model's picture only where the old deck was
+        base, restored = await run_in_threadpool(pipeline2.restore_photo, photo, r["clean"], r["old_box"])
         clean = cf.Future()
-        clean.set_result(r["clean"])
+        clean.set_result(base)
     key = secrets.token_urlsafe(12)
     out = TUNING_DIR / "out" / "live" / f"{dt.datetime.now():%m%d-%H%M%S}-p2"
     cam, placement, engine = r["cam"], r["placement"], r["engine"]
@@ -311,11 +315,12 @@ async def _wall_p2(req: "WallRequest", photo: bytes, size: tuple[int, int], t0: 
     files = {"photo.jpg": photo, "deck.json": req.deck, "wall.json": {
         "job": key, "flow": "p2", "size": size,
         "detect": {"verdict": r["verdict"], "text": r["detect_text"], "tries": r["detect_tries"],
-                   "cleaned_by": r["cleaned_by"]},
+                   "cleaned_by": r["cleaned_by"], "old_box": r["old_box"], "restored": restored},
         "fit_costs": r["fit_costs"], "marks": r["marks"], "solved": solved, "wall": wall, "camera": engine,
         "seconds": seconds}}
     if r["clean"] is not None:
         files["clean.jpg"] = r["clean"]
+        files["base.jpg"] = base
     await run_in_threadpool(_write, out, files)
     log.info("deck wall p2 %s: %s on the %s photo (deck: %s), %.1f s", key, wall["label"], r["src"], r["verdict"], seconds)
     return {"job": key, "width": size[0], "height": size[1], "camera": engine, "wall": wall, "seconds": seconds}
@@ -466,8 +471,8 @@ async def render(req: ComposeRequest) -> dict:
                  "camera": job.engine, "camera_height_ft": job.cam["camera_height_ft"], "placement": job.placement,
                  "attempts": attempts, "kept": scores, "passed": passed, "cleaned": job.clean is not None,
                  "seconds": seconds, "clean_wait_s": clean_wait, "prompt": text}}
-    if job.clean is not None:
-        files["clean.jpg"] = clean
+    if job.clean is not None:  # p2: the photo with the old deck's place from clean.jpg, which analyze kept
+        files["base.jpg" if job.flow == "p2" else "clean.jpg"] = clean
     if polished is not None:
         files["polished.jpg"] = await run_in_threadpool(providers.as_jpeg, polished)
     await run_in_threadpool(_write, out, files)

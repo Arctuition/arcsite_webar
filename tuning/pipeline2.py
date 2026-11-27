@@ -183,8 +183,12 @@ def shadow_map(ground: Image.Image, bare: Image.Image, deck_alpha, strength: flo
     return ratio ** strength
 
 
-def match_colour(deck: Image.Image, photo: Image.Image, amount: float = 0.5) -> Image.Image:
-    """The deck render's colours moved [amount] of the way to the photo's (mean and spread per Lab channel)."""
+def match_colour(deck: Image.Image, photo: Image.Image, amount: float = 0.5, ring: float = 0.08,
+                 gain: tuple[float, float] = (0.8, 1.25), shift: float = 15.0) -> Image.Image:
+    """The deck render's brightness moved [amount] of the way to the photo's around it (a ring [ring] of the width
+    wide): mean and spread of Lab L, the spread's gain held to [gain] and the mean's shift to [shift]. The hue is left
+    alone. Matching a and b to the whole photo (until 11-27) scaled them up to 3.3x, the render's near-grey a and b
+    against the photo's lawn and sky: white rails came out mint green and stair risers olive and brick red."""
     import cv2
     import numpy as np
 
@@ -194,12 +198,15 @@ def match_colour(deck: Image.Image, photo: Image.Image, amount: float = 0.5) -> 
         return deck
     dl = cv2.cvtColor(np.ascontiguousarray(d[..., :3]), cv2.COLOR_RGB2LAB).astype(np.float32)
     pl = cv2.cvtColor(np.asarray(photo.convert("RGB")), cv2.COLOR_RGB2LAB).astype(np.float32)
+    k = max(3, int(ring * d.shape[1]) | 1)
+    around = (cv2.dilate(a.astype(np.uint8), np.ones((k, k), np.uint8)) > 0) & ~a
+    ref = pl[..., 0][around] if around.sum() >= 50 else pl[..., 0].ravel()
+    dm, ds = dl[..., 0][a].mean(), dl[..., 0][a].std() + 1e-3
+    pm, ps = ref.mean(), ref.std() + 1e-3
+    tm = dm + float(np.clip((pm - dm) * amount, -shift, shift))
+    ts = ds * float(np.clip((ds + (ps - ds) * amount) / ds, *gain))
     out = dl.copy()
-    for c in range(3):
-        dm, ds = dl[..., c][a].mean(), dl[..., c][a].std() + 1e-3
-        pm, ps = pl[..., c].mean(), pl[..., c].std() + 1e-3
-        tm, ts = dm + (pm - dm) * amount, ds + (ps - ds) * amount
-        out[..., c] = (dl[..., c] - dm) * (ts / ds) + tm
+    out[..., 0] = (dl[..., 0] - dm) * (ts / ds) + tm
     rgb = cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
     return Image.fromarray(np.dstack([rgb, d[..., 3]]), "RGBA")
 
@@ -210,23 +217,86 @@ def _jpeg(im: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-def shadow_from_ground(ground: Image.Image, deck_alpha, strength: float = 0.85, k: int = 61, cut: float = 0.75):
-    """shadow_map without the bare render (the canvas sends only the deck and the deck with the ground): the engine's
-    ground is near flat (luminance spread ~7 of ~105), so its local brightest is the unshadowed ground, and what is
-    over a quarter darker than that is the deck's shadow (vs shadow_map, 11-25: the same area to IoU 0.70-0.86)."""
+def shadow_from_ground(ground: Image.Image, deck_alpha, strength: float = 0.85, k: int = 61, cut: float = 0.75,
+                       near: float = 0.02):
+    """shadow_map without the bare render (the canvas sends only the deck and the deck with the ground): the local
+    brightest of the engine's ground is the unshadowed ground, and what is over a quarter darker than that is the deck's
+    shadow (vs shadow_map, 11-25: the same area to IoU 0.70-0.86). Only shadow touching the deck (within [near] of the
+    width) is kept: on a drawing whose ground is textured grass (11-27) its dark blades came out as ~350 bits of shadow
+    over the lawn, and the paste-back, which takes the model's pixels wherever there is shadow, took 40% of the photo
+    from the model (now 2%; IoU vs shadow_map unchanged on the four harness photos, existing-deck 0.43 -> 0.84)."""
     import cv2
     import numpy as np
 
     g = np.asarray(ground.convert("RGBA")).astype(np.float32)
     lum = 0.299 * g[..., 0] + 0.587 * g[..., 1] + 0.114 * g[..., 2] + 1.0
-    on = (g[..., 3] > 200) & (np.asarray(deck_alpha) < 8)
+    deck_on = np.asarray(deck_alpha) >= 8
+    on = (g[..., 3] > 200) & ~deck_on
     env = cv2.GaussianBlur(cv2.dilate(np.where(on, lum, 0).astype(np.float32), np.ones((k, k), np.uint8)), (0, 0), k / 3)
     ratio = np.ones(lum.shape, np.float32)
     ratio[on] = np.clip(lum[on] / np.maximum(env[on], 1), 0.25, 1.0)
     shadow = cv2.morphologyEx((ratio < cut).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     shadow = cv2.morphologyEx(shadow, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    ratio = np.where(shadow > 0, ratio, 1.0).astype(np.float32)
+    reach = max(3, int(near * lum.shape[1]) | 1)
+    by_deck = cv2.dilate(deck_on.astype(np.uint8), np.ones((reach, reach), np.uint8))
+    n, labels = cv2.connectedComponents(shadow, connectivity=8)
+    touching = np.unique(labels[(by_deck > 0) & (shadow > 0)])
+    shadow = np.isin(labels, touching[touching > 0])
+    ratio = np.where(shadow, ratio, 1.0).astype(np.float32)
     return cv2.GaussianBlur(ratio, (0, 0), 2.0) ** strength
+
+
+def restore_photo(photo: bytes, clean: bytes, box=None, threshold: float = 10.0, grow: float = 0.015,
+                  feather: float = 0.008, join: float = 0.025) -> tuple[bytes, dict]:
+    """The photo with the cleaned photo only where the old deck was: the image model redraws the whole picture at ~1K
+    when it removes a deck (an order of magnitude less detail than the photo, after upscaling) and changes things
+    away from it too (a flower bed dropped, a fence carried on). Where it changed the photo is found by difference,
+    after moving the cleaned photo onto the photo's pixels; of those changes only the ones that touch the old deck's
+    box (marks.existing_deck.box: [ymin, xmin, ymax, xmax] in 0-1000) are taken, or without a box the largest one
+    and what touches it, grown by [grow] and feathered by [feather] of the width. {share, moved, ...} says how much."""
+    import cv2
+    import numpy as np
+
+    ph = np.asarray(Image.open(io.BytesIO(photo)).convert("RGB"))
+    h, w = ph.shape[:2]
+    keep = np.zeros((h, w), np.uint8)
+    if box:
+        y0, x0, y1, x1 = [float(v) / 1000 for v in box]
+        keep[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)] = 255
+    aligned, info = register(clean, photo, Image.fromarray(keep))
+    cl = np.asarray(Image.open(io.BytesIO(aligned)).convert("RGB").resize((w, h), Image.LANCZOS))
+    lab = lambda a: cv2.cvtColor(cv2.GaussianBlur(a, (0, 0), 2.0), cv2.COLOR_RGB2LAB).astype(np.float32)
+    diff = lab(cl) - lab(ph)
+    diff -= np.median(diff.reshape(-1, 3), axis=0)  # an overall change of tone is not a change of things
+    changed = (np.linalg.norm(diff, axis=2) > threshold).astype(np.uint8)
+    s = max(3, int(0.004 * w) | 1)
+    changed = cv2.morphologyEx(changed, cv2.MORPH_OPEN, np.ones((s, s), np.uint8))
+    changed = cv2.morphologyEx(changed, cv2.MORPH_CLOSE, np.ones((3 * s, 3 * s), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(changed, connectivity=8)
+    if n <= 1:
+        return photo, {**info, "share": 0.0}
+    if box:
+        g = max(3, int(0.05 * w) | 1)
+        near = cv2.dilate(keep, np.ones((g, g), np.uint8)) > 0
+        ids = np.unique(labels[near & (changed > 0)])
+    else:
+        big = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        g = max(3, int(0.05 * w) | 1)
+        near = cv2.dilate((labels == big).astype(np.uint8), np.ones((g, g), np.uint8)) > 0
+        ids = np.unique(labels[near & (changed > 0)])
+    m = np.isin(labels, ids[ids > 0]).astype(np.uint8)
+    # one region, holes and all: a chair on the old deck only partly changed (its top against dark glass) would
+    # otherwise be left half there, a ghost through the feathered edge
+    j = max(3, int(join * w) | 1)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((j, j), np.uint8))
+    contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    m = cv2.drawContours(np.zeros_like(m), contours, -1, 1, cv2.FILLED)
+    g = max(3, int(grow * w) | 1)
+    m = cv2.dilate(m, np.ones((g, g), np.uint8)).astype(np.float32)
+    m = cv2.GaussianBlur(m, (0, 0), max(1.0, feather * w))[..., None]
+    out = cl.astype(np.float32) * m + ph.astype(np.float32) * (1 - m)
+    info = {**info, "share": round(float((m > 0.5).mean()), 3)}
+    return _jpeg(Image.fromarray(out.clip(0, 255).astype(np.uint8))), info
 
 
 def compose_images(clean_jpeg: bytes, deck: Image.Image, ground: Image.Image, bare: Image.Image | None = None) -> dict:

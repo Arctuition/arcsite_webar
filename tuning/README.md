@@ -50,8 +50,9 @@
 
 1. **检测 + 去 deck 一次调用**（`pipeline2.detect_clean`，Gemini 3.1 Flash Image）：模型先答 DECK / NONE，有就同时出去掉它的图，没有就沿用原图。3 张照片 × 3 次判断全对。模型偶尔答 DECK 却不回图（今天的本地记录 15 次里有 2 次），这时再问一次；还没图，或检测本身失败而标墙说照片里有旧 deck（`existing_deck`），就改用 `inputs.clean_photo` 去掉它；也失败就 502，不再带着旧 deck 往下走（那样新 deck 会叠在旧 deck 上，贴回时旧 deck 露在四周）。`wall.json` 的 `detect` 记着问了几次（`tries`）和是谁去掉的（`cleaned_by`）。
 2. **墙和相机**：原图上标墙和检测并行；有旧 deck 时去 deck 图上也标一次，取线条残差（`fit_cost`）最小、又放得下 deck 的解。`camera.fit_problems` 拦两种：deck 大半出画；deck 在画面里不到 15% 宽（相机解坏了，如墙长 1514 ft）。拦下的换一次标墙重来，仍不行 422。deck 比墙宽时不拦，`camera.place` 让它越过墙端（靠左、居中、靠右里画面露出最多的那个）。图纸里 deck 越过它所贴那面墙的端点（绕过房子转角，或伸出房子）超过 1 ft、照片里同一端又是墙角时，以照片为准、对齐这个墙角，不再硬塞进墙里（否则绕过转角的那段会插进房子）；越过墙角的部分在画面外或房子侧面，这时只要 20% 的地板在画面里就放行。
-3. **本地合成**（`pipeline2.compose_images`）：截图切掉地下部分，贴到干净照片上，用带地面那张估出 deck 的阴影压暗照片（`shadow_from_ground`），deck 颜色向照片靠一半。
-4. **只润色 deck**（`prompts/p2l2.txt`）：模型只改 deck、栏杆、楼梯、家具和它们的阴影，不准加花草、不画地下的墩子。答回的图先对齐到合成图（`register`，前景照片 Gemini 会缩放 3–36%），再只把 deck 和阴影一带贴回干净照片（`paste_back`），其余像素是原照片。没截到 deck 时 `/compose` 直接 422。
+3. **本地合成**（`pipeline2.compose_images`）：截图切掉地下部分，贴到底图上，用带地面那张估出 deck 的阴影压暗照片（`shadow_from_ground`，只留和 deck 相连的阴影：地面是草地纹理时，草叶暗处曾被当成几百块阴影），deck 亮度向它周围一圈的照片靠一半（`match_colour`：只调 Lab 的 L，幅度有上限；以前 a/b 也按整张照片拉伸，最多放大 3.3 倍，白栏杆被染成薄荷绿）。
+   底图：没有旧 deck 就是照片本身；有旧 deck 时是 `pipeline2.restore_photo` 拼的——模型去 deck 时整张重画（约 1K 放大，细节只有原图 1/17，还会顺手改花坛、栅栏），所以只在和照片差别大、且挨着旧 deck（原图标墙的 `existing_deck.box`）的那一块用去 deck 图，其余是原照片。
+4. **只润色 deck**（`prompts/p2l2.txt`）：模型只改 deck、栏杆、楼梯、家具和它们的阴影，不准加花草、不画地下的墩子。答回的图先对齐到合成图（`register`，前景照片 Gemini 会缩放 3–36%），再只把 deck 和阴影一带贴回底图（`paste_back`），其余像素是原照片。没截到 deck 时 `/compose` 直接 422。
 
 画布截图隐藏房子、地面和立柱基础（基础在地下，顶面与地面齐平切不掉，会被画成混凝土墩）。
 
@@ -66,4 +67,4 @@
 .venv/bin/python -m tuning.pipeline2 polish --variants l2 --name d3   # 4：每张照片出 6 次，out/p2/polish/d3/
 ```
 
-`engine/p2/<照片>.{deck,ground,bare}.png` 是引擎按 `out/p2/cameras.json` 选出的相机截的图（deck：隐藏房子、地面、基础；ground：隐藏房子、基础；bare：只留地面）。每次请求的记录在 `out/live/<时间>-p2/`（多一张 `polished.jpg`：贴回前模型的原图）。
+`engine/p2/<照片>.{deck,ground,bare}.png` 是引擎按 `out/p2/cameras.json` 选出的相机截的图（deck：隐藏房子、地面、基础；ground：隐藏房子、基础；bare：只留地面）。每次请求的记录在 `out/live/<时间>-p2/`（多一张 `polished.jpg`：贴回前模型的原图；有旧 deck 时 `clean.jpg` 是模型去 deck 的原图，`base.jpg` 是拼回原照片后的底图，`wall.json` 的 `detect.restored` 记着用了去 deck 图的比例）。
