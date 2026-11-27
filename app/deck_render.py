@@ -60,6 +60,7 @@ def _decode(name: str, value: str) -> bytes:
 CLEAN_MODEL = "gemini-3.1-flash-image"
 COMPOSE_MODEL = "gemini-3.1-flash-image"
 WALL_TRIES = 2
+DETECT_TRIES = 2  # the model says DECK but sends no image about one call in seven; asked once more
 FLOW = os.environ.get("DECK_FLOW", "p2")  # "p2", or "two-step": the flow before 11-25 (v10j/v10k on the composite)
 P2_PROMPT = "p2l2"
 JOB_TTL_S = 30 * 60
@@ -217,6 +218,21 @@ async def analyze(req: WallRequest) -> dict:
     return {"job": key, "width": size[0], "height": size[1], "camera": engine, "wall": wall, "seconds": seconds}
 
 
+def _detect(photo: bytes) -> dict:
+    """pipeline2.detect_clean, asked again while it says DECK with no image. {verdict: DECK|NONE|None, text, image,
+    tries}; verdict DECK with image None when every try said DECK and sent no image, None when detection failed."""
+    said_deck, last = False, None
+    for k in range(DETECT_TRIES):
+        try:
+            return {**pipeline2.detect_clean(photo), "tries": k + 1}
+        except pipeline2.NoCleanImage as err:
+            said_deck, last = True, err
+        except Exception as err:  # noqa: BLE001 -- the wall marks then say whether there is a deck
+            last = err
+        log.warning("deck wall p2: deck detection, try %d of %d: %s", k + 1, DETECT_TRIES, last)
+    return {"verdict": "DECK" if said_deck else None, "text": str(last)[:200], "image": None, "tries": DETECT_TRIES}
+
+
 def _p2_cameras(photo: bytes, size: tuple[int, int], deck: dict) -> dict:
     """Steps 1-3 of the p2 flow: {verdict, clean (None without a deck), src, marks, cam, placement, engine}, raising
     HTTPException when no source gives a camera that can hold the deck."""
@@ -226,15 +242,28 @@ def _p2_cameras(photo: bytes, size: tuple[int, int], deck: dict) -> dict:
             raise ValueError("the wall analysis answer is not a JSON object")
         return (marks, *_solve(marks, jpeg, size, deck))
 
-    detect = _cleaner.submit(pipeline2.detect_clean, photo)
+    detect = _cleaner.submit(_detect, photo)
     sources = {"original": photo}
     futures = {"original": _cleaner.submit(solve, photo)}
-    try:
-        det = detect.result()
-    except Exception as err:  # noqa: BLE001 -- the photo is then taken as it is, as with NONE
-        log.warning("deck wall p2: deck detection failed, using the photo as it is: %s", err)
-        det = {"verdict": None, "text": str(err)[:200]}
+    det = detect.result()
     clean = det["image"] if det["verdict"] == "DECK" else None
+    if clean is None and det["verdict"] != "NONE":
+        # The detection said DECK and sent no picture, or failed outright: the wall marks, made at the same time,
+        # say whether the photo has a deck. Going on with the deck still in the photo puts the new deck on top
+        # of it, and only the new deck's part is pasted back, the old one showing around it.
+        has_deck = det["verdict"] == "DECK"
+        if not has_deck:
+            try:
+                has_deck = bool(futures["original"].result()[0].get("existing_deck"))
+            except Exception:  # noqa: BLE001 -- the wall loop below reports it
+                pass
+        if has_deck:
+            try:
+                clean = inputs.clean_photo(photo, CLEAN_MODEL)
+                det["cleaned_by"] = "inputs.clean_photo"
+            except Exception as err:  # noqa: BLE001
+                log.warning("deck wall p2: the photo's deck could not be removed: %s", err)
+                raise HTTPException(502, "the photo has a deck that could not be removed; try again") from err
     if clean is not None:
         sources["cleaned"] = clean
         futures["cleaned"] = _cleaner.submit(solve, clean)
@@ -256,7 +285,9 @@ def _p2_cameras(photo: bytes, size: tuple[int, int], deck: dict) -> dict:
         raise HTTPException(422, unfit[-1] if unfit else "; ".join(errors[-2:]))
     src = min(found, key=lambda k: float(found[k][1]["fit_cost"]))
     marks, cam, placement, engine = found[src]
-    return {"verdict": det["verdict"], "detect_text": det.get("text"), "clean": clean, "src": src, "marks": marks,
+    return {"verdict": det["verdict"], "detect_text": det.get("text"), "detect_tries": det.get("tries"),
+            "cleaned_by": det.get("cleaned_by", "detect_clean" if clean is not None else None),
+            "clean": clean, "src": src, "marks": marks,
             "cam": cam, "placement": placement, "engine": engine,
             "fit_costs": {k: round(float(v[1]["fit_cost"]), 5) for k, v in found.items()}}
 
@@ -278,7 +309,9 @@ async def _wall_p2(req: "WallRequest", photo: bytes, size: tuple[int, int], t0: 
     seconds = round(time.time() - t0, 1)
     solved = {k: v for k, v in cam.items() if k not in ("snapped_lines",)}
     files = {"photo.jpg": photo, "deck.json": req.deck, "wall.json": {
-        "job": key, "flow": "p2", "size": size, "detect": {"verdict": r["verdict"], "text": r["detect_text"]},
+        "job": key, "flow": "p2", "size": size,
+        "detect": {"verdict": r["verdict"], "text": r["detect_text"], "tries": r["detect_tries"],
+                   "cleaned_by": r["cleaned_by"]},
         "fit_costs": r["fit_costs"], "marks": r["marks"], "solved": solved, "wall": wall, "camera": engine,
         "seconds": seconds}}
     if r["clean"] is not None:

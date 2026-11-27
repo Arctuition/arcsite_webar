@@ -50,6 +50,10 @@ def _verdict(text: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+class NoCleanImage(providers.ProviderError):
+    """The model said the photo has a deck but sent no picture without it (about one call in seven on deck photos)."""
+
+
 def detect_clean(jpeg: bytes, model: str = MODEL) -> dict:
     """{verdict: DECK|NONE|None, text, image: the cleaned photo (the photo itself unless DECK), seconds}."""
     size = Image.open(io.BytesIO(jpeg)).size
@@ -57,7 +61,7 @@ def detect_clean(jpeg: bytes, model: str = MODEL) -> dict:
     image, text, reason = providers.gemini_answer(model, [DETECT_CLEAN_PROMPT, ("photo", jpeg)], size)
     verdict = _verdict(text)
     if verdict == "DECK" and image is None:
-        raise providers.ProviderError(f"DECK but no image ({reason}): {text}"[:400])
+        raise NoCleanImage(f"DECK but no image ({reason}): {text}"[:400])
     out = jpeg
     if verdict == "DECK":
         im = Image.open(io.BytesIO(image)).convert("RGB").resize(size, Image.LANCZOS)
