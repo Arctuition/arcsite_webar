@@ -60,7 +60,7 @@ app.include_router(deck_render.router)
 @app.exception_handler(RequestValidationError)
 async def deck_bad_request(request: Request, exc: RequestValidationError):
     """The two-step deck rendering answers bad input with 400 and a string detail (its 422 means no usable wall)."""
-    if request.url.path not in ("/api/deck/wall", "/api/deck/compose"):
+    if request.url.path not in ("/api/deck/analyze", "/api/deck/render"):
         return await request_validation_exception_handler(request, exc)
     detail = "; ".join(f"{'.'.join(map(str, e.get('loc', ())))}: {e.get('msg')}" for e in exc.errors())
     return JSONResponse({"detail": detail or "bad request"}, status_code=400)

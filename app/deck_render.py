@@ -1,21 +1,18 @@
 """Deck photo rendering for the canvas, while the prompt is being tuned (see tuning/README.md).
 
-One step -- POST /api/deck/render with the photo, the three 3D-view references, the canvas's deck JSON and the
-style; one model call, no photo analysis and no placement: the model puts the deck on the house itself.
-
-Two steps -- the engine draws the deck from the photo's own camera:
-  POST /api/deck/wall     the photo and the deck: the wall marked by Gemini, the camera solved, the deck placed along
+The engine draws the deck from the photo's own camera, in two calls:
+  POST /api/deck/analyze  the photo and the deck: the wall marked by Gemini, the camera solved, the deck placed along
                           the wall; answers with a job and the camera for AR_Web_RenderDeckPhotoDiagram. A photo with
                           a deck already on it starts being cleaned (that deck removed) in the background.
-  POST /api/deck/compose  the job and the engine's two transparent renders (the deck alone, and with the ground): the
+  POST /api/deck/render   the job and the engine's two transparent renders (the deck alone, and with the ground): the
                           deck pasted on the clean photo and made real by Gemini, retried while tuning.check says the
                           photo or the deck was redrawn.
 
 The p2 flow (DECK_FLOW, default; tuning/pipeline2.py), on the same two routes and the same canvas renders:
-  /wall     one image-model call says whether the photo has a deck and removes it, while the wall is marked on the
+  /analyze  one image-model call says whether the photo has a deck and removes it, while the wall is marked on the
             photo; with a deck, the wall is marked on the cleaned photo too, and the camera that fits best (lowest
             line cost) and can hold the deck (camera.fit_problems) is kept.
-  /compose  the deck render pasted on the clean photo with its shadow and the photo's colour; the model polishes only the
+  /render   the deck render pasted on the clean photo with its shadow and the photo's colour; the model polishes only the
             deck (p2l2), its answer is moved back onto the composite's pixels and pasted on the clean photo around the
             deck and its shadow, the rest of the photo kept as it was.
 """
@@ -52,19 +49,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-DEFAULT_MODEL = "gpt-image-2.6-sunburst"
-DEFAULT_PROMPT = "v5p"
-VIEWS = ("top", "left-front", "right-front")
-
-
-class RenderRequest(BaseModel):
-    photo: str = Field(description="the house photo, base64 JPEG or PNG")
-    refs: dict[str, str] = Field(description="base64 PNGs keyed top, left-front, right-front")
-    deck: dict
-    style: str
-    model: str | None = None
-    prompt: str | None = None
-
 
 def _decode(name: str, value: str) -> bytes:
     try:
@@ -72,66 +56,6 @@ def _decode(name: str, value: str) -> bytes:
     except Exception as err:
         raise HTTPException(400, f"{name} is not base64") from err
 
-
-def _keep(photo: bytes, refs: dict[str, bytes], req: RenderRequest, result: bytes, prompt: str,
-          model: str, prompt_name: str, size: tuple[int, int], seconds: float) -> None:
-    """Every rendering the canvas asked for, with what went in, under tuning/out/live/ (not committed)."""
-    out = TUNING_DIR / "out" / "live" / f"{dt.datetime.now():%m%d-%H%M%S}-{req.style}"
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "photo.jpg").write_bytes(photo)
-    for name, data in refs.items():
-        (out / f"{name}.png").write_bytes(data)
-    (out / "result.jpg").write_bytes(result)
-    (out / "deck.json").write_text(json.dumps(req.deck, indent=2))
-    (out / "meta.json").write_text(json.dumps({
-        "style": req.style, "model": model, "prompt_version": prompt_name, "photo_size": size,
-        "seconds": seconds, "prompt": prompt}, indent=2))
-
-
-@router.post("/api/deck/render")
-async def render(req: RenderRequest) -> dict:
-    missing = [v for v in VIEWS if v not in req.refs]
-    if missing:
-        raise HTTPException(400, f"missing references: {', '.join(missing)}")
-    looks = json.loads((TUNING_DIR / "styles.json").read_text())
-    if req.style not in looks:
-        raise HTTPException(400, f"unknown style {req.style}")
-    prompt_name = req.prompt or DEFAULT_PROMPT
-    template_path = TUNING_DIR / "prompts" / f"{prompt_name}.txt"
-    if not template_path.is_file():
-        raise HTTPException(400, f"unknown prompt {prompt_name}")
-    try:
-        deck_text, furniture = describe(req.deck)
-    except (KeyError, ValueError, TypeError) as err:
-        raise HTTPException(400, f"deck: {err}") from err
-
-    photo = _decode("photo", req.photo)
-    refs = {v: _decode(v, req.refs[v]) for v in VIEWS}
-    size = Image.open(io.BytesIO(photo)).size
-    parts = build_parts(template_path.read_text(), photo, refs, deck_text, furniture, looks[req.style])
-    model = req.model or DEFAULT_MODEL
-
-    t0 = time.time()
-    try:
-        image, _ = await run_in_threadpool(providers.edit, model, parts, size)
-    except providers.ProviderError as err:
-        raise HTTPException(502, str(err)) from err
-    jpeg = providers.as_jpeg(image)
-    width, height = Image.open(io.BytesIO(jpeg)).size
-    _keep(photo, refs, req, jpeg, prompt_text(parts), model, prompt_name, size, round(time.time() - t0, 1))
-    return {
-        "image": base64.b64encode(jpeg).decode(),
-        "mime": "image/jpeg",
-        "width": width,
-        "height": height,
-        "seconds": round(time.time() - t0, 1),
-        "model": model,
-        "prompt_version": prompt_name,
-        "prompt": prompt_text(parts),
-    }
-
-
-# ================================================================ two steps
 
 CLEAN_MODEL = "gemini-3.1-flash-image"
 COMPOSE_MODEL = "gemini-3.1-flash-image"
@@ -244,8 +168,8 @@ class WallRequest(BaseModel):
     deck: dict = Field(description="the deck as the engine exports it (DeckPhotoDeck.json)")
 
 
-@router.post("/api/deck/wall")
-async def deck_wall(req: WallRequest) -> dict:
+@router.post("/api/deck/analyze")
+async def analyze(req: WallRequest) -> dict:
     _sweep()
     t0 = time.time()
     photo, size = await run_in_threadpool(_as_jpeg_photo, _decode("photo", req.photo))
@@ -420,8 +344,8 @@ def _attempts(model: str, parts: list, size: tuple[int, int], composite: bytes, 
     return best[1], best[2], scores
 
 
-@router.post("/api/deck/compose")
-async def deck_compose(req: ComposeRequest) -> dict:
+@router.post("/api/deck/render")
+async def render(req: ComposeRequest) -> dict:
     _sweep()
     t0 = time.time()
     looks = json.loads((TUNING_DIR / "styles.json").read_text())
@@ -430,7 +354,7 @@ async def deck_compose(req: ComposeRequest) -> dict:
     with _jobs_lock:
         job = _jobs.get(req.job)
     if job is None:
-        raise HTTPException(404, "unknown or expired job; send the photo to /api/deck/wall again")
+        raise HTTPException(404, "unknown or expired job; send the photo to /api/deck/analyze again")
     prompt_name = req.prompt or "auto"
     if prompt_name == "auto" and job.flow == "p2":
         prompt_name = P2_PROMPT
@@ -448,7 +372,7 @@ async def deck_compose(req: ComposeRequest) -> dict:
 
     deck_im = await run_in_threadpool(above)
     if deck_im.getchannel("A").getbbox() is None:  # nothing to polish: the model would only be asked to keep the photo
-        raise HTTPException(422, "the 3D view drew no deck from this camera; send the photo to /api/deck/wall again")
+        raise HTTPException(422, "the 3D view drew no deck from this camera; send the photo to /api/deck/analyze again")
     t_clean = time.time()
     if job.clean is None:
         clean = job.photo
